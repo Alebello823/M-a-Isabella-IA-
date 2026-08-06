@@ -1,0 +1,43 @@
+# config/settings.yaml
+# Configuración global de la plataforma cognitiva Mía Isabella
+
+app:
+  name: "Mía Isabella"
+  version: "0.1.0"
+  environment: "development"  # development, staging, production
+  default_language: "es"
+
+paths:
+  data_dir: "data"
+  logs_dir: "logs"
+  models_dir: "models"        # Donde se descargarán los LLMs
+  assets_dir: "assets"
+
+storage:
+  database_path: "data/mia_isabella.db"
+  vector_store_path: "data/vectors"
+  graph_store_path: "data/graph"
+
+inference:
+  default_model: "phi3:mini"
+  default_model_path: "models/Phi-3-mini-4k-instruct-q4.gguf"
+  max_tokens: 512
+  temperature: 0.7
+  fallback_model: "tinyllama"
+
+telemetry:
+  log_level: "INFO"           # DEBUG, INFO, WARNING, ERROR
+  enable_performance_tracing: true
+  metrics_retention_days: 30
+
+identity:
+  default_ai_name: "Mía Isabella"
+  default_relationship: "Pa"
+
+hardware:
+  auto_detect: true
+  manual_profile: null       # Si se pone "tier_1_low" fuerza ese perfil
+
+sync:
+  enabled: false              # Se activa en fases posteriores
+  conflict_strategy: "manual"  # manual, newest_wins, merge

@@ -1,0 +1,42 @@
+# Entorno virtual
+venv/
+
+# Modelos
+models/*.gguf
+models/*.bin
+models/*.safetensors
+
+# Bases de datos
+data/*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Variables de entorno
+.env
+.env.*
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de compilación
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Cache
+.cache/
