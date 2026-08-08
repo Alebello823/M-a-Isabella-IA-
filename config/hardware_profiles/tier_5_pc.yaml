@@ -1,12 +1,20 @@
-# Perfil para PC de escritorio con 8 GB RAM (usable ~6-7 GB)
+# PC de escritorio con 8 GB RAM o más
+# RAM usable aproximada: 6-7 GB
+
 tier: tier_5_pc
 min_ram_gb: 6.0
+
 recommended_model: "models/Phi-3-mini-4k-instruct-q4.gguf"
+fallback_model: "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
 max_tokens: 512
 temperature: 0.7
+
 enable_vector_memory: true
 enable_knowledge_extraction: true
+
 vector_store_backend: "faiss"
 embedding_model: "all-MiniLM-L6-v2"
 max_episodes_in_vector: 5000
+
 fallback_to_like_search: true

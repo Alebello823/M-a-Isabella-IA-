@@ -6,11 +6,9 @@ pydantic>=2.5.0            # Para validación robusta de configuraciones (mejor 
 requests>=2.31.0           # Para futuros agentes de internet
 
 # Desarrollo y formato (recomendados)
-black>=24.0.0              # Formateador de código
-ruff>=0.1.0                # Linter rápido
-mypy>=1.8.0                # Type checker (para mantener la calidad)
-pytest>=8.0.0              # Para pruebas unitarias
-llama-cpp-python>=0.2.0
-psutil
-sentence-transformers
-faiss-cpu
+#black>=24.0.0              # Formateador de código
+#mypy>=1.8.0                # Type checker (para mantener la calidad)
+#pytest>=8.0.0              # Para pruebas unitarias
+#llama-cpp-python>=0.2.0
+#psutil
+#sentence-transformers

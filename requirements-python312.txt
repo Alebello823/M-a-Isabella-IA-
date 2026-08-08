@@ -1,0 +1,8 @@
+certifi==2026.7.22
+charset-normalizer==3.4.9
+idna==3.18
+numpy @ file:///home/builder/.termux-build/python-numpy/src/dist/numpy-2.4.4-cp314-cp314-android_aarch64.whl#sha256=68ef31f0d8925d96da2b5e014c2c3d32a16dd68887329eeecb7f3a548222e24d
+pydantic==1.10.26
+requests==2.34.2
+typing_extensions==4.16.0
+urllib3==2.7.0

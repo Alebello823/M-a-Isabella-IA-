@@ -1,0 +1,20 @@
+# Dispositivos con buena memoria disponible
+# Se permite intentar Phi-3 Mini
+
+tier: tier_3_high
+min_ram_gb: 3.5
+
+recommended_model: "models/Phi-3-mini-4k-instruct-q4.gguf"
+fallback_model: "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
+max_tokens: 384
+temperature: 0.7
+
+enable_vector_memory: false
+enable_knowledge_extraction: true
+
+vector_store_backend: "none"
+embedding_model: null
+max_episodes_in_vector: 0
+
+fallback_to_like_search: true

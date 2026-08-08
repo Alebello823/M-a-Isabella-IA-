@@ -7,17 +7,14 @@ import yaml
 class CapabilityMapper:
     """
     Carga los perfiles de hardware de Mía Isabella y selecciona
-    el perfil apropiado según la RAM disponible.
+    el perfil más apropiado según la RAM disponible.
 
-    El mapper tolera:
-
-    - YAML vacío
-    - YAML inválido
-    - perfiles que no sean diccionarios
-    - archivos inexistentes
-    - min_ram_gb inválido
-    - perfiles incompletos
-    - selección manual por tier
+    El mapper está diseñado para tolerar:
+      - YAML vacío
+      - documentos YAML con contenido inválido
+      - perfiles que no sean diccionarios
+      - archivos inexistentes
+      - valores de RAM incorrectos
     """
 
     def __init__(self, profiles_dir: Path):
@@ -26,12 +23,9 @@ class CapabilityMapper:
             self.profiles_dir
         )
 
-    def _load_profiles(
-        self,
-        profiles_dir: Path,
-    ) -> List[Dict[str, Any]]:
+    def _load_profiles(self, profiles_dir: Path) -> List[Dict[str, Any]]:
         """
-        Carga todos los perfiles YAML válidos.
+        Carga todos los perfiles YAML válidos del directorio.
         """
 
         profiles: List[Dict[str, Any]] = []
@@ -47,46 +41,45 @@ class CapabilityMapper:
                 with profile_file.open("r", encoding="utf-8") as fh:
                     data = yaml.safe_load(fh)
 
-                # YAML vacío
+                # Un YAML vacío devuelve None.
                 if data is None:
                     continue
 
-                # Si el YAML contiene una lista de perfiles
+                # Algunos perfiles pueden contener una lista.
                 if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            item["_profile_file"] = str(profile_file)
-                            profiles.append(item)
-
+                    profiles.extend(
+                        item
+                        for item in data
+                        if isinstance(item, dict)
+                    )
                     continue
 
-                # Perfil YAML normal
+                # Perfil YAML normal: diccionario.
                 if isinstance(data, dict):
+                    # Guardamos también el archivo de origen.
                     data["_profile_file"] = str(profile_file)
                     profiles.append(data)
 
             except yaml.YAMLError:
-                # Un YAML roto no debe tumbar el kernel.
+                # Un perfil defectuoso no debe tumbar todo el kernel.
                 continue
 
             except (OSError, UnicodeError):
-                # Un archivo ilegible tampoco debe tumbar el kernel.
+                # Error de lectura de archivo.
                 continue
 
         # BLINDAJE:
-        # nunca permitimos None u otros objetos en la lista.
+        # nunca permitimos que None u otros objetos lleguen al sort().
         profiles = [
-            profile
-            for profile in profiles
-            if isinstance(profile, dict)
+            p for p in profiles
+            if isinstance(p, dict)
         ]
 
-        # Ordenamos por RAM mínima.
         return sorted(
             profiles,
-            key=lambda profile: self._ram_value(
-                profile.get("min_ram_gb", 0)
-            ),
+            key=lambda p: self._ram_value(
+                p.get("min_ram_gb", 0)
+            )
         )
 
     @staticmethod
@@ -100,7 +93,7 @@ class CapabilityMapper:
         except (TypeError, ValueError):
             return 0.0
 
-    def select_profile(
+        def select_profile(
         self,
         ram_gb: float,
         manual_tier: Optional[str] = None,
@@ -108,21 +101,20 @@ class CapabilityMapper:
         """
         Selecciona el perfil de hardware.
 
-        Si manual_tier está especificado:
-            intenta utilizar ese tier.
+        Si manual_tier está especificado, se intenta utilizar
+        ese perfil explícitamente.
 
-        Si no está especificado:
-            selecciona automáticamente el perfil compatible
-            con la RAM disponible.
+        Si no existe manual_tier, se selecciona automáticamente
+        según la RAM disponible.
         """
 
-        # Selección manual
+        # Selección manual solicitada por Kernel/configuración.
         if manual_tier:
             for profile in self.profiles:
                 if profile.get("tier") == manual_tier:
                     return profile
 
-        # Selección automática
+        # Selección automática según RAM.
         return self.get_profile_for_ram(ram_gb)
 
     def get_profile_for_ram(
@@ -130,22 +122,19 @@ class CapabilityMapper:
         ram_gb: float,
     ) -> Optional[Dict[str, Any]]:
         """
-        Selecciona el perfil más potente que sea compatible
+        Devuelve el perfil con mayor min_ram_gb que sea compatible
         con la RAM disponible.
 
         Ejemplo:
+            RAM = 2.1 GB
+            -> selecciona el perfil de menor requisito compatible.
 
-            RAM 2.2 GB
-            -> busca perfiles <= 2.2 GB
-
-            RAM 6.5 GB
-            -> puede seleccionar tier_5_pc si existe.
+            RAM = 6.5 GB
+            -> puede seleccionar tier_5_pc.
         """
 
         if not self.profiles:
             return None
-
-        ram_gb = self._ram_value(ram_gb)
 
         compatible = [
             profile
@@ -155,17 +144,15 @@ class CapabilityMapper:
             ) <= ram_gb
         ]
 
-        # IMPORTANTE:
-        # No seleccionamos un perfil de 6 GB para un dispositivo
-        # que solamente tiene 2.2 GB disponibles.
         if not compatible:
-            return None
+            # Si ningún perfil coincide, usamos el más pequeño.
+            return self.profiles[0]
 
         return max(
             compatible,
-            key=lambda profile: self._ram_value(
-                profile.get("min_ram_gb", 0)
-            ),
+            key=lambda p: self._ram_value(
+                p.get("min_ram_gb", 0)
+            )
         )
 
     def get_profile(
@@ -173,7 +160,7 @@ class CapabilityMapper:
         ram_gb: float,
     ) -> Optional[Dict[str, Any]]:
         """
-        Alias compatible con código existente.
+        Alias compatible con código que utilice get_profile().
         """
 
         return self.get_profile_for_ram(ram_gb)
@@ -216,55 +203,9 @@ class CapabilityMapper:
         if model_path.is_absolute():
             return model_path
 
-        # capability_mapper.py está en:
-        #
-        # ~/MiaIsabella/hardware/
-        #
-        # parents[1] =
-        #
-        # ~/MiaIsabella/
-        project_root = Path(__file__).resolve().parents[1]
-
-        return (project_root / model_path).resolve()
-
-    def get_profile_by_tier(
-        self,
-        tier: str,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Busca directamente un perfil por su nombre de tier.
-        """
-
-        for profile in self.profiles:
-            if profile.get("tier") == tier:
-                return profile
-
-        return None
-
-    def get_model_for_tier(
-        self,
-        tier: str,
-    ) -> Optional[Path]:
-        """
-        Devuelve la ruta absoluta del modelo definido
-        en un tier concreto.
-        """
-
-        profile = self.get_profile_by_tier(tier)
-
-        if not profile:
-            return None
-
-        model = profile.get("recommended_model")
-
-        if not model:
-            return None
-
-        model_path = Path(str(model))
-
-        if model_path.is_absolute():
-            return model_path.resolve()
-
+        # PROJECT_ROOT:
+        # capability_mapper.py está en hardware/
+        # por lo tanto parents[1] es ~/MiaIsabella
         project_root = Path(__file__).resolve().parents[1]
 
         return (project_root / model_path).resolve()
@@ -274,7 +215,7 @@ class CapabilityMapper:
         Devuelve una descripción limpia de los perfiles cargados.
         """
 
-        result: List[Dict[str, Any]] = []
+        result = []
 
         for profile in self.profiles:
             result.append(

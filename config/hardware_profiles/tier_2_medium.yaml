@@ -1,0 +1,20 @@
+# Dispositivos con memoria moderada
+# Qwen sigue siendo la opción estable
+
+tier: tier_2_medium
+min_ram_gb: 2.0
+
+recommended_model: "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+fallback_model: "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
+max_tokens: 384
+temperature: 0.7
+
+enable_vector_memory: false
+enable_knowledge_extraction: false
+
+vector_store_backend: "none"
+embedding_model: null
+max_episodes_in_vector: 0
+
+fallback_to_like_search: true
