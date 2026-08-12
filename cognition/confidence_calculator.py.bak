@@ -1,0 +1,130 @@
+"""
+Calculador de confianza del Cognitive Core.
+
+Diseño:
+- determinista
+- ligero
+- sin LLM
+- sin dependencias externas
+- explicable
+"""
+
+from typing import Iterable, Optional
+
+from cognition.models import Hypothesis
+
+
+class ConfidenceCalculator:
+    """
+    Combina señales cognitivas en una confianza global.
+
+    No intenta representar una probabilidad matemática exacta.
+    Es una métrica operacional para ayudar al sistema a decidir
+    cuándo puede avanzar y cuándo debe buscar más información.
+    """
+
+    def from_hypotheses(
+        self,
+        hypotheses: Iterable[Hypothesis],
+    ) -> float:
+        hypotheses = list(hypotheses)
+
+        if not hypotheses:
+            return 0.0
+
+        # Las hipótesis mejor sustentadas pesan más.
+        ordered = sorted(
+            hypotheses,
+            key=lambda h: h.confidence,
+            reverse=True,
+        )
+
+        best = ordered[0].confidence
+
+        if len(ordered) == 1:
+            return self._clamp(best)
+
+        second = ordered[1].confidence
+
+        # Si existe una hipótesis dominante clara,
+        # aumentamos ligeramente la confianza.
+        separation = max(
+            0.0,
+            best - second,
+        )
+
+        value = (
+            best * 0.80
+            + separation * 0.20
+        )
+
+        return self._clamp(value)
+
+    def combine(
+        self,
+        analysis_confidence: float,
+        hypothesis_confidence: float,
+        plan_confidence: float,
+        simulation_probability: float,
+        decision_confidence: float,
+        information_confidence: float,
+        weights: Optional[Iterable[float]] = None,
+    ) -> float:
+        """
+        Combina las principales señales del ciclo cognitivo.
+
+        Por defecto:
+        - análisis:       20%
+        - hipótesis:      20%
+        - plan:           15%
+        - simulación:     15%
+        - decisión:       15%
+        - información:    15%
+        """
+
+        values = [
+            analysis_confidence,
+            hypothesis_confidence,
+            plan_confidence,
+            simulation_probability,
+            decision_confidence,
+            information_confidence,
+        ]
+
+        if weights is None:
+            weights = [
+                0.20,
+                0.20,
+                0.15,
+                0.15,
+                0.15,
+                0.15,
+            ]
+        else:
+            weights = list(weights)
+
+        if len(values) != len(weights):
+            raise ValueError(
+                "values y weights deben tener la misma longitud"
+            )
+
+        total_weight = sum(weights)
+
+        if total_weight <= 0:
+            return 0.0
+
+        result = sum(
+            self._clamp(value) * weight
+            for value, weight in zip(values, weights)
+        )
+
+        return self._clamp(
+            result / total_weight
+        )
+
+    @staticmethod
+    def _clamp(value: float) -> float:
+        return max(
+            0.0,
+            min(1.0, float(value)),
+        )

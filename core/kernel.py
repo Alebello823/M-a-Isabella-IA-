@@ -128,12 +128,22 @@ class Kernel:
 
         # Orquestador (con todas las dependencias opcionales)
         from core.orchestrator import Orchestrator
+        from cognition.cognitive_supervisor import CognitiveSupervisor
+
+        cognitive_supervisor = CognitiveSupervisor()
+
+        self.container.register_instance(
+        "CognitiveSupervisor",
+        cognitive_supervisor,
+    )
+
         orchestrator = Orchestrator(
-            inference_engine=engine,
-            episodic_repo=episodic_repo,
-            knowledge_extractor=knowledge_extractor,
-            vector_repo=vector_repo,
-        )
+        inference_engine=engine,
+        episodic_repo=episodic_repo,
+        knowledge_extractor=knowledge_extractor,
+        vector_repo=vector_repo,
+        cognitive_supervisor=cognitive_supervisor,
+    ) 
         self.container.register_instance("Orchestrator", orchestrator)
 
     def run(self, mode: str = "sync"):

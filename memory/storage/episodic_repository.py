@@ -2,21 +2,32 @@
 Repositorio de memoria episódica de Mía Isabella.
 
 Responsabilidades:
+
 - Guardar episodios en SQLite.
 - Recuperar episodios.
 - Buscar conversaciones.
 - Gestionar importancia.
-- Mantener compatibilidad futura con memoria vectorial.
+- Recuperar episodios por rango temporal.
+- Mantener una interfaz preparada para memoria vectorial.
 
-El repositorio debe seguir funcionando aunque el vector_repo
-no esté instalado o disponible.
+IMPORTANTE:
+
+La memoria episódica NO depende de:
+
+- Qwen.
+- Phi.
+- ningún LLM.
+- sentence-transformers.
+- FAISS.
+
+La memoria vectorial puede existir como una capa adicional,
+pero SQLite continúa siendo la fuente primaria.
 """
 
 import json
 import logging
 
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -28,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 
 class EpisodicRepository:
-    """Repositorio SQLite para memoria episódica."""
+    """
+    Repositorio SQLite para memoria episódica.
+    """
 
     TABLE = "episodes"
 
@@ -36,15 +49,14 @@ class EpisodicRepository:
         """
         Inicializa el repositorio.
 
-        vector_repo es opcional. Si no existe, la memoria episódica
-        continúa funcionando normalmente utilizando SQLite.
+        vector_repo se conserva como extensión futura, pero la
+        memoria episódica no depende de él.
         """
 
-        # IMPORTANTE:
-        # No usar super().__init__() aquí porque esta clase no hereda
-        # de un repositorio que necesite inicialización.
         self.db = DatabaseConnector()
+
         self._table = self.TABLE
+
         self.vector_repo = vector_repo
 
         logger.debug(
@@ -52,66 +64,104 @@ class EpisodicRepository:
             self._table,
         )
 
-    # ============================================================
+    # =============================================================
     # SERIALIZACIÓN
-    # ============================================================
+    # =============================================================
 
     def _serialize_episode(
         self,
         episode: Episode,
     ) -> Dict[str, Any]:
-        """Convierte Episode en datos compatibles con SQLite."""
+        """
+        Convierte Episode en datos compatibles con SQLite.
+        """
 
         return {
             "id": str(episode.id),
+
             "title": episode.title,
-            "start_time": episode.start_time.isoformat(),
+
+            "start_time": (
+                episode.start_time.isoformat()
+            ),
+
             "end_time": (
                 episode.end_time.isoformat()
                 if episode.end_time
                 else None
             ),
+
             "summary": episode.summary,
-            "importance_score": episode.importance_score,
+
+            "importance_score": (
+                episode.importance_score
+            ),
+
             "tags": (
-                json.dumps(episode.tags)
+                json.dumps(
+                    episode.tags,
+                    ensure_ascii=False,
+                )
                 if episode.tags
                 else "[]"
             ),
+
             "device_id": episode.device_id,
+
             "emotion_tone": (
                 episode.emotion_tone.value
                 if episode.emotion_tone
                 else EmotionTone.NEUTRAL.value
             ),
+
             "context_snapshot": (
-                json.dumps(episode.context_snapshot)
+                json.dumps(
+                    episode.context_snapshot,
+                    ensure_ascii=False,
+                )
                 if episode.context_snapshot
                 else "{}"
             ),
+
             "messages": json.dumps(
                 [
                     {
                         "id": str(message.id),
-                        "role": message.role.value
-                        if hasattr(message.role, "value")
-                        else str(message.role),
+
+                        "role": (
+                            message.role.value
+                            if hasattr(
+                                message.role,
+                                "value",
+                            )
+                            else str(message.role)
+                        ),
+
                         "content": message.content,
-                        "timestamp": message.timestamp.isoformat(),
+
+                        "timestamp": (
+                            message.timestamp.isoformat()
+                        ),
+
                         "metadata": message.metadata,
                     }
                     for message in episode.messages
-                ]
-                if episode.messages
-                else []
+                ],
+                ensure_ascii=False,
             ),
         }
+
+    # =============================================================
+    # DESERIALIZACIÓN
+    # =============================================================
 
     def _deserialize_episode(
         self,
         row: Dict[str, Any],
     ) -> Episode:
-        """Convierte una fila SQLite en Episode."""
+        """
+        Convierte una fila SQLite en Episode.
+        """
 
         messages_data = (
             json.loads(row["messages"])
@@ -122,17 +172,29 @@ class EpisodicRepository:
         messages = []
 
         for item in messages_data:
+
             message = Message(
                 id=UUID(item["id"]),
+
                 role=item["role"],
+
                 content=item["content"],
+
                 timestamp=datetime.fromisoformat(
                     item["timestamp"]
                 ),
-                metadata=item.get("metadata", {}),
+
+                metadata=item.get(
+                    "metadata",
+                    {},
+                ),
             )
 
             messages.append(message)
+
+        # ---------------------------------------------------------
+        # EMOCIÓN
+        # ---------------------------------------------------------
 
         emotion_value = row["emotion_tone"]
 
@@ -142,49 +204,104 @@ class EpisodicRepository:
                 if emotion_value
                 else EmotionTone.NEUTRAL
             )
-        except (ValueError, TypeError):
+
+        except (
+            ValueError,
+            TypeError,
+        ):
             emotion_tone = EmotionTone.NEUTRAL
+
+        # ---------------------------------------------------------
+        # TAGS
+        # ---------------------------------------------------------
+
+        try:
+            tags = (
+                json.loads(row["tags"])
+                if row["tags"]
+                else []
+            )
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+        ):
+            tags = []
+
+        # ---------------------------------------------------------
+        # CONTEXTO
+        # ---------------------------------------------------------
+
+        try:
+            context_snapshot = (
+                json.loads(
+                    row["context_snapshot"]
+                )
+                if row["context_snapshot"]
+                else {}
+            )
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+        ):
+            context_snapshot = {}
+
+        # ---------------------------------------------------------
+        # EPISODIO
+        # ---------------------------------------------------------
 
         return Episode(
             id=UUID(row["id"]),
+
             title=row["title"],
+
             messages=messages,
+
             start_time=datetime.fromisoformat(
                 row["start_time"]
             ),
+
             end_time=(
-                datetime.fromisoformat(row["end_time"])
+                datetime.fromisoformat(
+                    row["end_time"]
+                )
                 if row["end_time"]
                 else None
             ),
+
             summary=row["summary"],
+
             importance_score=(
                 row["importance_score"]
                 if row["importance_score"] is not None
                 else 0.5
             ),
-            tags=(
-                json.loads(row["tags"])
-                if row["tags"]
-                else []
-            ),
+
+            tags=tags,
+
             device_id=row["device_id"],
+
             emotion_tone=emotion_tone,
-            context_snapshot=(
-                json.loads(row["context_snapshot"])
-                if row["context_snapshot"]
-                else {}
-            ),
+
+            context_snapshot=context_snapshot,
         )
 
-    # ============================================================
+    # =============================================================
     # GUARDAR
-    # ============================================================
+    # =============================================================
 
-    def save_episode(self, episode: Episode) -> str:
-        """Guarda o reemplaza un episodio."""
+    def save_episode(
+        self,
+        episode: Episode,
+    ) -> str:
+        """
+        Guarda o reemplaza un episodio.
+        """
 
-        data = self._serialize_episode(episode)
+        data = self._serialize_episode(
+            episode
+        )
 
         query = f"""
             INSERT OR REPLACE INTO {self._table} (
@@ -215,7 +332,10 @@ class EpisodicRepository:
             )
         """
 
-        self.db.execute(query, data)
+        self.db.execute(
+            query,
+            data,
+        )
 
         logger.debug(
             "Episodio guardado: %s",
@@ -224,15 +344,17 @@ class EpisodicRepository:
 
         return str(episode.id)
 
-    # ============================================================
+    # =============================================================
     # RECUPERAR UNO
-    # ============================================================
+    # =============================================================
 
     def get_episode(
         self,
         episode_id: str,
     ) -> Optional[Episode]:
-        """Recupera un episodio por ID."""
+        """
+        Recupera un episodio por ID.
+        """
 
         query = f"""
             SELECT *
@@ -247,40 +369,51 @@ class EpisodicRepository:
         )
 
         if row:
-            return self._deserialize_episode(row)
+            return self._deserialize_episode(
+                row
+            )
 
         return None
 
-    # ============================================================
+    # =============================================================
     # EPISODIOS RECIENTES
-    # ============================================================
+    # =============================================================
 
     def get_recent_episodes(
         self,
         limit: int = 10,
         since: Optional[str] = None,
     ) -> List[Episode]:
-        """Obtiene los episodios más recientes."""
+        """
+        Obtiene los episodios más recientes.
+        """
+
+        limit = max(
+            1,
+            int(limit),
+        )
 
         query = f"""
             SELECT *
             FROM {self._table}
         """
 
-        params = {}
+        params: Dict[str, Any] = {}
 
         if since:
+
             query += """
                 WHERE start_time > :since
             """
-            params["since"] = since
+
+            params["since"] = str(since)
 
         query += """
             ORDER BY start_time DESC
             LIMIT :limit
         """
 
-        params["limit"] = int(limit)
+        params["limit"] = limit
 
         rows = self.db.execute_query(
             query,
@@ -293,9 +426,9 @@ class EpisodicRepository:
             for row in rows
         ]
 
-    # ============================================================
+    # =============================================================
     # BÚSQUEDA
-    # ============================================================
+    # =============================================================
 
     def search_episodes_by_content(
         self,
@@ -303,74 +436,50 @@ class EpisodicRepository:
         limit: int = 5,
     ) -> List[Episode]:
         """
-        Busca episodios.
+        Busca episodios mediante SQLite.
 
-        Actualmente SQLite LIKE es el método principal.
-        Si posteriormente se conecta vector_repo, se puede
-        ampliar sin romper esta función.
+        La memoria episódica no carga modelos de embeddings.
+
+        Se buscan coincidencias en:
+
+        - mensajes
+        - resumen
+        - título
+        - etiquetas
         """
 
-        # --------------------------------------------------------
-        # Intento opcional de memoria vectorial.
-        # --------------------------------------------------------
+        if not query_text or not query_text.strip():
+            return []
 
-        if self.vector_repo is not None:
+        limit = max(
+            1,
+            int(limit),
+        )
 
-            try:
-                from sentence_transformers import (
-                    SentenceTransformer,
-                )
-
-                model = SentenceTransformer(
-                    "all-MiniLM-L6-v2"
-                )
-
-                embedding = model.encode(
-                    query_text
-                )
-
-                neighbors = self.vector_repo.search(
-                    embedding,
-                    limit,
-                )
-
-                # Todavía no utilizamos directamente los vecinos
-                # porque necesitamos un mapeo estable:
-                #
-                # FAISS ID -> episode_id
-                #
-                # Por ahora usamos SQLite como fallback seguro.
-
-                if neighbors:
-                    logger.debug(
-                        "Memoria vectorial encontró %d vecinos; "
-                        "usando SQLite hasta disponer del mapeo.",
-                        len(neighbors),
-                    )
-
-            except Exception as exc:
-                logger.warning(
-                    "Falló búsqueda vectorial; usando SQLite: %s",
-                    exc,
-                )
-
-        # --------------------------------------------------------
-        # Búsqueda SQLite
-        # --------------------------------------------------------
-
-        search_pattern = f"%{query_text}%"
+        search_pattern = (
+            f"%{query_text.strip()}%"
+        )
 
         query = f"""
             SELECT *
             FROM {self._table}
             WHERE messages LIKE ?
+               OR summary LIKE ?
+               OR title LIKE ?
+               OR tags LIKE ?
             ORDER BY start_time DESC
             LIMIT ?
         """
 
         rows = self.db.execute_query(
             query,
-            (search_pattern, int(limit)),
+            (
+                search_pattern,
+                search_pattern,
+                search_pattern,
+                search_pattern,
+                limit,
+            ),
             fetch_all=True,
         )
 
@@ -379,15 +488,17 @@ class EpisodicRepository:
             for row in rows
         ]
 
-    # ============================================================
+    # =============================================================
     # ELIMINAR
-    # ============================================================
+    # =============================================================
 
     def delete_episode(
         self,
         episode_id: str,
     ) -> bool:
-        """Elimina un episodio."""
+        """
+        Elimina un episodio.
+        """
 
         query = f"""
             DELETE FROM {self._table}
@@ -399,18 +510,23 @@ class EpisodicRepository:
             (episode_id,),
         )
 
-        return result is not None and result != 0
+        return (
+            result is not None
+            and result != 0
+        )
 
-    # ============================================================
+    # =============================================================
     # RANGO TEMPORAL
-    # ============================================================
+    # =============================================================
 
     def get_episodes_by_time_range(
         self,
         start: datetime,
         end: datetime,
     ) -> List[Episode]:
-        """Obtiene episodios dentro de un intervalo temporal."""
+        """
+        Obtiene episodios dentro de un intervalo temporal.
+        """
 
         query = f"""
             SELECT *
@@ -436,20 +552,27 @@ class EpisodicRepository:
             for row in rows
         ]
 
-    # ============================================================
+    # =============================================================
     # IMPORTANCIA
-    # ============================================================
+    # =============================================================
 
     def update_importance(
         self,
         episode_id: str,
         new_score: float,
     ) -> None:
-        """Actualiza la importancia de un episodio."""
+        """
+        Actualiza la importancia de un episodio.
+
+        El valor siempre queda entre 0 y 1.
+        """
 
         score = max(
             0.0,
-            min(1.0, float(new_score)),
+            min(
+                1.0,
+                float(new_score),
+            ),
         )
 
         query = f"""
@@ -460,18 +583,23 @@ class EpisodicRepository:
 
         self.db.execute(
             query,
-            (score, episode_id),
+            (
+                score,
+                episode_id,
+            ),
         )
 
-    # ============================================================
+    # =============================================================
     # TODOS
-    # ============================================================
+    # =============================================================
 
     def get_all_episodes(
         self,
         limit: Optional[int] = None,
     ) -> List[Episode]:
-        """Obtiene episodios almacenados."""
+        """
+        Obtiene episodios almacenados.
+        """
 
         query = f"""
             SELECT *
@@ -479,11 +607,26 @@ class EpisodicRepository:
             ORDER BY start_time DESC
         """
 
+        params = ()
+
         if limit is not None:
-            query += f" LIMIT {int(limit)}"
+
+            safe_limit = max(
+                1,
+                int(limit),
+            )
+
+            query += """
+                LIMIT ?
+            """
+
+            params = (
+                safe_limit,
+            )
 
         rows = self.db.execute_query(
             query,
+            params,
             fetch_all=True,
         )
 
@@ -492,12 +635,14 @@ class EpisodicRepository:
             for row in rows
         ]
 
-    # ============================================================
+    # =============================================================
     # CONTADOR
-    # ============================================================
+    # =============================================================
 
     def count_episodes(self) -> int:
-        """Devuelve el número total de episodios."""
+        """
+        Devuelve el número total de episodios.
+        """
 
         query = f"""
             SELECT COUNT(*) AS count
@@ -510,6 +655,8 @@ class EpisodicRepository:
         )
 
         if result:
-            return int(result["count"])
+            return int(
+                result["count"]
+            )
 
         return 0
