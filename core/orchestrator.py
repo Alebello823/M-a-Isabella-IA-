@@ -7,9 +7,13 @@ mensaje
    ↓
 memoria episódica
    ↓
-contexto
+Problem Analyzer
+   ↓
+Problem estructurado
    ↓
 Cognitive Core
+   ↓
+contexto cognitivo
    ↓
 prompt
    ↓
@@ -32,7 +36,9 @@ from internal.schemas import (
     Episode,
 )
 
-from contracts.inference import InferenceEngineProtocol
+from contracts.inference import (
+    InferenceEngineProtocol,
+)
 
 from memory.storage.episodic_repository import (
     EpisodicRepository,
@@ -42,13 +48,35 @@ from cognition.cognitive_supervisor import (
     CognitiveSupervisor,
 )
 
-from cognition.models import Problem
+from cognition.problem_analyzer import (
+    ProblemAnalyzer,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 class Orchestrator:
+    """
+    Coordina memoria, análisis cognitivo e inferencia.
+
+    Responsabilidades:
+
+    1. Recuperar contexto.
+    2. Transformar el mensaje en un Problem.
+    3. Ejecutar el Cognitive Core.
+    4. Construir contexto cognitivo.
+    5. Solicitar inferencia.
+    6. Guardar el episodio.
+    7. Extraer conocimiento cuando exista extractor.
+
+    No conoce:
+    - Qwen
+    - Phi
+    - llama.cpp
+    - Transformers
+    - implementación concreta del modelo.
+    """
 
     def __init__(
         self,
@@ -58,6 +86,9 @@ class Orchestrator:
         vector_repo=None,
         cognitive_supervisor: Optional[
             CognitiveSupervisor
+        ] = None,
+        problem_analyzer: Optional[
+            ProblemAnalyzer
         ] = None,
         system_prompt: str = (
             "Eres Mía Isabella, una asistente personal "
@@ -80,6 +111,11 @@ class Orchestrator:
         self.cognitive = (
             cognitive_supervisor
             or CognitiveSupervisor()
+        )
+
+        self.problem_analyzer = (
+            problem_analyzer
+            or ProblemAnalyzer()
         )
 
     # =========================================================
@@ -109,49 +145,80 @@ class Orchestrator:
             recent_episodes
         )
 
-        # -----------------------------------------------------
-        # 2. Construir problema cognitivo
-        # -----------------------------------------------------
-
-        problem = Problem(
-            description=user_message.content,
-            objective=(
-                "Responder correctamente al usuario."
-            ),
-            known_facts=self._extract_context_facts(
+        context_facts = (
+            self._extract_context_facts(
                 recent_episodes
-            ),
-            unknowns=[],
-            constraints=[],
-            assumptions=[],
+            )
         )
 
         # -----------------------------------------------------
-        # 3. Cognitive Core
+        # 2. Analizar problema
+        # -----------------------------------------------------
+        #
+        # El Orchestrator NO construye manualmente Problem.
+        #
+        # ProblemAnalyzer es responsable de transformar:
+        #
+        # mensaje + contexto
+        #
+        # en:
+        #
+        # Problem estructurado.
         # -----------------------------------------------------
 
         try:
 
-            cognitive_result = (
-                self.cognitive.solve(problem)
+            problem = self.problem_analyzer.analyze(
+                user_message=user_message.content,
+                context_facts=context_facts,
             )
 
             logger.info(
-                "Cognitive Core: "
-                "confidence=%.2f "
-                "uncertainty=%.2f",
-                cognitive_result.confidence,
-                cognitive_result.uncertainty,
+                "Problema analizado: %s",
+                problem.id,
             )
 
         except Exception as exc:
 
             logger.exception(
-                "Error en Cognitive Core: %s",
+                "Error en ProblemAnalyzer: %s",
                 exc,
             )
 
-            cognitive_result = None
+            # Si el análisis estructural falla,
+            # no continuamos fingiendo que existe
+            # un contexto cognitivo válido.
+
+            problem = None
+
+        # -----------------------------------------------------
+        # 3. Cognitive Core
+        # -----------------------------------------------------
+
+        cognitive_result = None
+
+        if problem is not None:
+
+            try:
+
+                cognitive_result = (
+                    self.cognitive.solve(problem)
+                )
+
+                logger.info(
+                    "Cognitive Core: "
+                    "confidence=%.2f "
+                    "uncertainty=%.2f",
+                    cognitive_result.confidence,
+                    cognitive_result.uncertainty,
+                )
+
+            except Exception as exc:
+
+                logger.exception(
+                    "Error en Cognitive Core: %s",
+                    exc,
+                )
 
         # -----------------------------------------------------
         # 4. Contexto cognitivo
@@ -287,16 +354,14 @@ class Orchestrator:
             for message in episode.messages:
 
                 if message.role == MessageRole.USER:
-
                     role = "Usuario"
-
                 else:
-
                     role = "Mía"
 
                 content = (
-                    message.content
-                    .strip()
+                    message.content.strip()
+                    if message.content
+                    else ""
                 )
 
                 if not content:
@@ -364,6 +429,10 @@ class Orchestrator:
                 "Se necesita información adicional."
             )
 
+        # -----------------------------------------------------
+        # Hipótesis
+        # -----------------------------------------------------
+
         if result.hypotheses:
 
             lines.append(
@@ -381,6 +450,10 @@ class Orchestrator:
                     f"{hypothesis.status.value})"
                 )
 
+        # -----------------------------------------------------
+        # Plan
+        # -----------------------------------------------------
+
         if result.plan:
 
             lines.append(
@@ -392,6 +465,10 @@ class Orchestrator:
                 lines.append(
                     f"- {step.action}"
                 )
+
+        # -----------------------------------------------------
+        # Decisión
+        # -----------------------------------------------------
 
         if result.decision:
 
@@ -408,6 +485,10 @@ class Orchestrator:
                 f"- Estado: "
                 f"{result.decision.status.value}"
             )
+
+        # -----------------------------------------------------
+        # Preguntas / información pendiente
+        # -----------------------------------------------------
 
         if result.questions:
 

@@ -8,8 +8,22 @@ No modifica archivos.
 No ejecuta acciones reales.
 
 Su función es convertir un problema en:
-problema -> evidencia -> hipótesis -> plan -> simulación
--> riesgo -> decisión -> confianza.
+
+problema
+    ↓
+evidencia
+    ↓
+hipótesis
+    ↓
+plan
+    ↓
+simulación
+    ↓
+riesgo
+    ↓
+decisión
+    ↓
+confianza
 """
 
 import logging
@@ -93,18 +107,27 @@ class CognitiveSupervisor:
             problem.description,
         )
 
-        # 1. Comprender el problema.
+        # -----------------------------------------------------
+        # 1. Comprender el problema
+        # -----------------------------------------------------
+
         analysis = self.reasoning.analyze_problem(
             problem
         )
 
-        # 2. Medir incertidumbre.
+        # -----------------------------------------------------
+        # 2. Medir incertidumbre
+        # -----------------------------------------------------
+
         uncertainty = self.uncertainty.calculate(
             problem,
             problem.evidence,
         )
 
-        # 3. Generar y evaluar hipótesis.
+        # -----------------------------------------------------
+        # 3. Generar y evaluar hipótesis
+        # -----------------------------------------------------
+
         hypotheses = self.hypotheses.generate(
             problem
         )
@@ -114,26 +137,44 @@ class CognitiveSupervisor:
             problem.evidence,
         )
 
-        # 4. Construir plan.
+        # -----------------------------------------------------
+        # 4. Construir plan
+        #
+        # Las hipótesis evaluadas se pasan al planificador.
+        # En esta etapa PlanningEngine mantiene su comportamiento
+        # actual; posteriormente utilizaremos estas hipótesis
+        # para mejorar la priorización del plan.
+        # -----------------------------------------------------
+
         plan = self.planning.create_plan(
-            problem
+            problem,
+            hypotheses=hypotheses,
         )
 
         plan = self.planning.prioritize_steps(
             plan
         )
 
-        # 5. Simular sin ejecutar.
+        # -----------------------------------------------------
+        # 5. Simular sin ejecutar
+        # -----------------------------------------------------
+
         simulation = self.simulation.simulate(
             plan
         )
 
-        # 6. Evaluar riesgo.
+        # -----------------------------------------------------
+        # 6. Evaluar riesgo
+        # -----------------------------------------------------
+
         risk = self.risk.assess_plan(
             plan
         )
 
-        # 7. Elegir estrategia.
+        # -----------------------------------------------------
+        # 7. Elegir estrategia
+        # -----------------------------------------------------
+
         decision = self.decision.choose(
             plan=plan,
             risk=risk,
@@ -141,14 +182,20 @@ class CognitiveSupervisor:
             uncertainty=uncertainty,
         )
 
-        # 8. Confianza de hipótesis.
+        # -----------------------------------------------------
+        # 8. Confianza de hipótesis
+        # -----------------------------------------------------
+
         hypothesis_confidence = (
             self.confidence.from_hypotheses(
                 hypotheses
             )
         )
 
-        # 9. Confianza global.
+        # -----------------------------------------------------
+        # 9. Confianza global
+        # -----------------------------------------------------
+
         global_confidence = (
             self.confidence.combine(
                 analysis["confidence"],
@@ -160,20 +207,23 @@ class CognitiveSupervisor:
             )
         )
 
-        # 10. Determinar necesidad de información.
-        #
-        # Importante:
-        # no dependemos únicamente de un umbral numérico.
+        # -----------------------------------------------------
+        # 10. Determinar necesidad de información
+        # -----------------------------------------------------
+
         needs_information = (
             bool(analysis["needs_more_information"])
             or uncertainty >= 0.65
             or bool(analysis["contradictions"])
         )
 
-        questions = list(problem.unknowns)
+        questions = list(
+            problem.unknowns
+        )
 
-        # Si existe contradicción, también la convertimos
+        # Si existe contradicción, convertirla
         # en una pregunta cognitiva explícita.
+
         for first, second in analysis["contradictions"]:
             questions.append(
                 f"Resolver contradicción entre "
@@ -186,6 +236,10 @@ class CognitiveSupervisor:
             global_confidence,
             uncertainty,
         )
+
+        # -----------------------------------------------------
+        # 11. Resultado cognitivo
+        # -----------------------------------------------------
 
         return CognitiveResult(
             problem=problem,

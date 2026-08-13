@@ -8,9 +8,14 @@ No utiliza LLM.
 """
 
 import re
-from typing import List
+from typing import List, Optional
 
-from cognition.models import Plan, PlanStep, Problem
+from cognition.models import (
+    Hypothesis,
+    Plan,
+    PlanStep,
+    Problem,
+)
 
 
 class PlanningEngine:
@@ -18,6 +23,7 @@ class PlanningEngine:
     def create_plan(
         self,
         problem: Problem,
+        hypotheses: Optional[List[Hypothesis]] = None,
     ) -> Plan:
 
         objective = (
@@ -32,7 +38,10 @@ class PlanningEngine:
         # --------------------------------------------------
 
         if self._is_performance_problem(text):
-            return self._performance_plan(problem, objective)
+            return self._performance_plan(
+                problem,
+                objective,
+            )
 
         # --------------------------------------------------
         # Plan especializado: información insuficiente
@@ -59,9 +68,10 @@ class PlanningEngine:
     ) -> Plan:
         """
         Prioriza acciones que:
+
         1. reducen incertidumbre
         2. son reversibles
-        3. tienen bajo riesgo
+        3. permiten verificación
         """
 
         def priority(step: PlanStep) -> tuple:
@@ -114,8 +124,10 @@ class PlanningEngine:
                 reversible=True,
             ),
             PlanStep(
-                action="Medir el efecto del tamaño de contexto "
-                "sobre el rendimiento.",
+                action=(
+                    "Medir el efecto del tamaño de contexto "
+                    "sobre el rendimiento."
+                ),
                 expected_result=(
                     "Comparación del rendimiento con diferentes "
                     "niveles de contexto."
@@ -123,8 +135,10 @@ class PlanningEngine:
                 reversible=True,
             ),
             PlanStep(
-                action="Comparar los resultados con la configuración "
-                "actual de llama.cpp.",
+                action=(
+                    "Comparar los resultados con la configuración "
+                    "actual de llama.cpp."
+                ),
                 expected_result=(
                     "Determinación de si la configuración actual "
                     "contribuye a la lentitud."
@@ -132,16 +146,21 @@ class PlanningEngine:
                 reversible=True,
             ),
             PlanStep(
-                action="Identificar la causa más probable "
-                "sin cambiar todavía el modelo.",
+                action=(
+                    "Identificar la causa más probable "
+                    "sin cambiar todavía el modelo."
+                ),
                 expected_result=(
-                    "Una causa priorizada y respaldada por mediciones."
+                    "Una causa priorizada y respaldada "
+                    "por mediciones."
                 ),
                 reversible=True,
             ),
             PlanStep(
-                action="Proponer el ajuste mínimo y reversible "
-                "que pueda mejorar el rendimiento.",
+                action=(
+                    "Proponer el ajuste mínimo y reversible "
+                    "que pueda mejorar el rendimiento."
+                ),
                 expected_result=(
                     "Una acción concreta que pueda probarse "
                     "sin comprometer el sistema."
@@ -149,7 +168,9 @@ class PlanningEngine:
                 reversible=True,
             ),
             PlanStep(
-                action="Verificar el rendimiento después del ajuste.",
+                action=(
+                    "Verificar el rendimiento después del ajuste."
+                ),
                 expected_result=(
                     "Confirmación o rechazo de la hipótesis "
                     "mediante una nueva medición."
@@ -196,14 +217,20 @@ class PlanningEngine:
 
         steps: List[PlanStep] = [
             PlanStep(
-                action="Identificar y priorizar la información faltante.",
+                action=(
+                    "Identificar y priorizar "
+                    "la información faltante."
+                ),
                 expected_result=(
                     "Lista de incógnitas ordenadas por impacto "
                     "sobre la decisión."
                 ),
             ),
             PlanStep(
-                action="Analizar los hechos y evidencias disponibles.",
+                action=(
+                    "Analizar los hechos y evidencias "
+                    "disponibles."
+                ),
                 expected_result=(
                     "Separación entre hechos, observaciones, "
                     "inferencias y supuestos."
@@ -214,8 +241,10 @@ class PlanningEngine:
         if problem.constraints:
             steps.append(
                 PlanStep(
-                    action="Evaluar las restricciones antes "
-                    "de proponer cambios.",
+                    action=(
+                        "Evaluar las restricciones antes "
+                        "de proponer cambios."
+                    ),
                     expected_result=(
                         "Límites operativos claramente definidos."
                     ),
@@ -225,15 +254,19 @@ class PlanningEngine:
         steps.extend(
             [
                 PlanStep(
-                    action="Generar alternativas compatibles "
-                    "con la evidencia disponible.",
+                    action=(
+                        "Generar alternativas compatibles "
+                        "con la evidencia disponible."
+                    ),
                     expected_result=(
                         "Una o más estrategias candidatas."
                     ),
                 ),
                 PlanStep(
-                    action="Evaluar riesgos y consecuencias "
-                    "de las alternativas.",
+                    action=(
+                        "Evaluar riesgos y consecuencias "
+                        "de las alternativas."
+                    ),
                     expected_result=(
                         "Alternativa preferida con riesgo conocido."
                     ),
@@ -250,9 +283,18 @@ class PlanningEngine:
 
         confidence = (
             0.40
-            + min(0.25, len(problem.known_facts) * 0.05)
-            + min(0.15, len(problem.evidence) * 0.05)
-            - min(0.20, len(problem.unknowns) * 0.05)
+            + min(
+                0.25,
+                len(problem.known_facts) * 0.05,
+            )
+            + min(
+                0.15,
+                len(problem.evidence) * 0.05,
+            )
+            - min(
+                0.20,
+                len(problem.unknowns) * 0.05,
+            )
         )
 
         return Plan(
@@ -278,7 +320,9 @@ class PlanningEngine:
                 ),
             ),
             PlanStep(
-                action="Evaluar restricciones y supuestos.",
+                action=(
+                    "Evaluar restricciones y supuestos."
+                ),
                 expected_result=(
                     "Condiciones que limitan las alternativas."
                 ),
@@ -310,7 +354,10 @@ class PlanningEngine:
         )
 
     @staticmethod
-    def _problem_text(problem: Problem) -> str:
+    def _problem_text(
+        problem: Problem,
+    ) -> str:
+
         parts = [
             problem.description,
             problem.objective or "",
@@ -323,7 +370,10 @@ class PlanningEngine:
         return " ".join(parts).lower()
 
     @staticmethod
-    def _is_performance_problem(text: str) -> bool:
+    def _is_performance_problem(
+        text: str,
+    ) -> bool:
+
         keywords = (
             "lento",
             "lentitud",
