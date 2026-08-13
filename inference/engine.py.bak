@@ -1,83 +1,118 @@
-# inference/engine.py
-
 """
 Motor de inferencia de Mía Isabella.
 
-Backend:
-    llama.cpp mediante llama-cli.
+Responsabilidades
+-----------------
+- Ejecutar modelos GGUF mediante llama-cli.
+- Mantener una interfaz estable para el Kernel/Orchestrator.
+- Realizar una generación por petición.
+- Controlar correctamente llama-cli en Termux.
+- Evitar que la interfaz interactiva de llama-cli bloquee Python.
+- Devolver únicamente el texto generado por el modelo.
 
-Diseñado para Termux / Android.
+Arquitectura
 
-No utiliza llama-cpp-python.
+    Orchestrator
+          |
+          v
+    InferenceEngineProtocol
+          |
+          v
+    LlamaCppEngine
+          |
+          v
+       llama-cli
+          |
+          v
+       GGUF
+
+El motor NO depende de:
+- Qwen
+- Phi
+- Llama
+- Gemma
+- ningún modelo concreto
+
+El modelo es un recurso intercambiable.
 """
+
+from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
-from contracts.inference import InferenceEngineProtocol
 
 logger = logging.getLogger(__name__)
 
 
-class LlamaCppEngine(InferenceEngineProtocol):
+class LlamaCppEngine:
     """
-    Motor de inferencia basado en llama-cli.
+    Adaptador estable entre Mía Isabella y llama-cli.
 
-    Compatible con llamadas del kernel que proporcionen:
+    IMPORTANTE
+    ----------
+    Algunas builds de llama-cli, incluida la que hemos probado
+    en Termux, generan la respuesta pero permanecen dentro de su
+    interfaz interactiva esperando stdin.
 
-        model_path
-        n_ctx
-        n_threads
-        max_tokens
-        temperature
+    Por eso NO dependemos de que el proceso termine solo.
+
+    Flujo:
+
+        prompt
+          ↓
+        llama-cli
+          ↓
+        respuesta
+          ↓
+        /exit
+          ↓
+        proceso termina
+          ↓
+        parser
+          ↓
+        texto limpio
     """
 
     def __init__(
         self,
-        model_path: Path,
+        model_path,
         n_ctx: int = 2048,
         n_threads: int = 4,
         max_tokens: int = 256,
         temperature: float = 0.7,
-        **kwargs: Any,
+        timeout: int = 180,
+        llama_cli: Optional[str] = None,
+        **kwargs,
     ):
         self.model_path = Path(model_path)
 
-        self.n_ctx = max(512, int(n_ctx))
+        self.n_ctx = max(128, int(n_ctx))
         self.n_threads = max(1, int(n_threads))
         self.max_tokens = max(1, int(max_tokens))
         self.temperature = max(0.0, float(temperature))
+        self.timeout = max(10, int(timeout))
 
-        # ---------------------------------------------------------
-        # Buscar llama-cli
-        # ---------------------------------------------------------
-
-        self.llama_cli = shutil.which("llama-cli")
+        self.llama_cli = (
+            llama_cli
+            or shutil.which("llama-cli")
+        )
 
         if not self.llama_cli:
             raise RuntimeError(
-                "No se encontró llama-cli en PATH.\n"
-                "Instálalo con:\n"
-                "pkg install llama-cpp"
+                "No se encontró llama-cli en PATH. "
+                "Instala llama.cpp antes de iniciar Mía Isabella."
             )
-
-        # ---------------------------------------------------------
-        # Verificar modelo
-        # ---------------------------------------------------------
 
         if not self.model_path.exists():
             raise FileNotFoundError(
-                f"Modelo no encontrado: {self.model_path}"
-            )
-
-        if not self.model_path.is_file():
-            raise FileNotFoundError(
-                f"La ruta del modelo no es un archivo: "
-                f"{self.model_path}"
+                f"No existe el modelo GGUF: {self.model_path}"
             )
 
         logger.info(
@@ -86,55 +121,48 @@ class LlamaCppEngine(InferenceEngineProtocol):
 
         logger.info(
             "llama-cli: %s",
-            self.llama_cli
+            self.llama_cli,
         )
 
         logger.info(
             "Modelo: %s",
-            self.model_path
+            self.model_path,
         )
 
         logger.info(
             "Contexto: %d",
-            self.n_ctx
+            self.n_ctx,
         )
 
         logger.info(
             "Threads: %d",
-            self.n_threads
+            self.n_threads,
         )
 
         logger.info(
             "Max tokens: %d",
-            self.max_tokens
+            self.max_tokens,
         )
 
         logger.info(
             "Temperature: %.2f",
-            self.temperature
+            self.temperature,
         )
 
-        # ---------------------------------------------------------
-        # Comprobar backend
-        # ---------------------------------------------------------
+        self._verify_llama_cli()
 
-        self._verify_backend()
+    # ============================================================
+    # VERIFICACIÓN
+    # ============================================================
 
-        logger.info(
-            "Motor de inferencia inicializado correctamente"
-        )
-
-    # =============================================================
-    # BACKEND
-    # =============================================================
-
-    def _verify_backend(self) -> None:
+    def _verify_llama_cli(self) -> None:
         """
         Verifica que llama-cli pueda ejecutarse.
+
+        No carga el modelo.
         """
 
         try:
-
             result = subprocess.run(
                 [
                     self.llama_cli,
@@ -143,41 +171,45 @@ class LlamaCppEngine(InferenceEngineProtocol):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
+                check=False,
             )
 
         except subprocess.TimeoutExpired as exc:
-
             raise RuntimeError(
-                "llama-cli tardó demasiado en responder."
+                "llama-cli tardó demasiado durante la verificación."
             ) from exc
 
         except OSError as exc:
-
             raise RuntimeError(
                 f"No se pudo ejecutar llama-cli: {exc}"
             ) from exc
 
-        if result.returncode != 0:
+        output = self._merge_streams(
+            result.stdout,
+            result.stderr,
+        )
 
-            raise RuntimeError(
-                "llama-cli está instalado pero "
-                "no pudo ejecutarse.\n"
-                f"{result.stderr.strip()}"
-            )
-
-        version = result.stdout.strip()
-
-        if version:
+        if output:
+            first_line = output.splitlines()[0].strip()
 
             logger.info(
                 "llama.cpp disponible: %s",
-                version.splitlines()[0]
+                first_line,
             )
 
-    # =============================================================
+        if result.returncode != 0:
+            logger.warning(
+                "llama-cli devolvió código %s durante la "
+                "verificación.",
+                result.returncode,
+            )
+
+    # ============================================================
     # GENERACIÓN
-    # =============================================================
+    # ============================================================
 
     def generate(
         self,
@@ -186,36 +218,30 @@ class LlamaCppEngine(InferenceEngineProtocol):
         temperature: Optional[float] = None,
     ) -> str:
         """
-        Genera texto mediante llama-cli.
+        Ejecuta una generación independiente.
 
-        Si max_tokens o temperature no se proporcionan,
-        utiliza los valores configurados en el constructor.
+        La implementación está diseñada específicamente para
+        builds de llama-cli que permanecen en modo CLI después
+        de generar.
+
+        No utiliza subprocess.run() porque necesitamos controlar
+        stdin mientras el proceso está vivo.
         """
 
         if not prompt or not prompt.strip():
             return ""
 
-        # Valores por defecto del motor.
-
-        if max_tokens is None:
-            max_tokens = self.max_tokens
-
-        if temperature is None:
-            temperature = self.temperature
-
-        max_tokens = max(
-            1,
-            int(max_tokens)
+        max_tokens = (
+            self.max_tokens
+            if max_tokens is None
+            else max(1, int(max_tokens))
         )
 
-        temperature = max(
-            0.0,
-            float(temperature)
+        temperature = (
+            self.temperature
+            if temperature is None
+            else max(0.0, float(temperature))
         )
-
-        # ---------------------------------------------------------
-        # Comando llama-cli
-        # ---------------------------------------------------------
 
         command = [
             self.llama_cli,
@@ -235,145 +261,596 @@ class LlamaCppEngine(InferenceEngineProtocol):
             "--temp",
             str(temperature),
 
+            # Esta opción fue comprobada directamente
+            # con la build de Termux utilizada.
+            "-no-cnv",
+
             "-p",
             prompt,
         ]
 
         logger.debug(
-            "Ejecutando llama-cli: %s",
-            self.model_path.name
+            "Ejecutando llama-cli."
         )
 
-        # ---------------------------------------------------------
-        # Entorno
-        # ---------------------------------------------------------
+        logger.debug(
+            "Modelo: %s",
+            self.model_path,
+        )
 
-        env = os.environ.copy()
+        logger.debug(
+            "Contexto: %d",
+            self.n_ctx,
+        )
 
-        # ---------------------------------------------------------
-        # Ejecutar
-        # ---------------------------------------------------------
+        logger.debug(
+            "Threads: %d",
+            self.n_threads,
+        )
+
+        logger.debug(
+            "Max tokens: %d",
+            max_tokens,
+        )
+
+        logger.debug(
+            "Timeout: %ds",
+            self.timeout,
+        )
+
+        process: Optional[subprocess.Popen] = None
 
         try:
-
-            process = subprocess.run(
+            process = subprocess.Popen(
                 command,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env=env,
-                timeout=300,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                env=os.environ.copy(),
+            )
+
+            logger.debug(
+                "llama-cli iniciado con PID=%s",
+                process.pid,
+            )
+
+            stdout, stderr = self._communicate_with_exit(
+                process
             )
 
         except subprocess.TimeoutExpired as exc:
-
             logger.error(
-                "Timeout durante la inferencia."
+                "llama-cli superó el timeout de %ds.",
+                self.timeout,
             )
 
+            self._terminate_process(process)
+
             raise RuntimeError(
-                "El modelo tardó demasiado en responder."
+                "El motor de inferencia superó el tiempo "
+                f"máximo de {self.timeout} segundos."
             ) from exc
 
-        except OSError as exc:
+        except KeyboardInterrupt:
+            logger.warning(
+                "Interrupción recibida durante la inferencia."
+            )
 
-            logger.exception(
-                "Error ejecutando llama-cli."
+            self._terminate_process(process)
+
+            raise
+
+        except OSError as exc:
+            self._terminate_process(process)
+
+            logger.error(
+                "Error ejecutando llama-cli: %s",
+                exc,
             )
 
             raise RuntimeError(
                 f"No se pudo ejecutar llama-cli: {exc}"
             ) from exc
 
-        # ---------------------------------------------------------
-        # Error del proceso
-        # ---------------------------------------------------------
+        finally:
+            if process is not None:
+                self._close_pipes(process)
 
-        if process.returncode != 0:
-
-            stderr = process.stderr.strip()
-
-            logger.error(
-                "llama-cli terminó con código %s",
-                process.returncode,
-            )
-
-            if stderr:
-
-                logger.error(
-                    "llama-cli stderr: %s",
-                    stderr,
-                )
-
+        if process is None:
             raise RuntimeError(
-                "llama-cli terminó con un error. "
-                f"Código: {process.returncode}"
+                "No se pudo crear el proceso llama-cli."
             )
 
-        # ---------------------------------------------------------
-        # Resultado
-        # ---------------------------------------------------------
+        logger.debug(
+            "llama-cli finalizado con código %s.",
+            process.returncode,
+        )
 
-        response = process.stdout.strip()
+        if stderr:
+            self._log_stderr(stderr)
+
+        if process.returncode not in (0, None):
+            raise RuntimeError(
+                "llama-cli terminó con código "
+                f"{process.returncode}."
+            )
+
+        response = self._extract_response(
+            stdout=stdout,
+            prompt=prompt,
+        )
 
         if not response:
-
             logger.warning(
-                "llama-cli no produjo texto."
+                "llama-cli terminó correctamente pero "
+                "no se pudo extraer una respuesta."
+            )
+
+            logger.debug(
+                "stdout bruto de llama-cli:\n%s",
+                stdout,
             )
 
             return ""
 
-        return self._clean_output(response)
+        logger.debug(
+            "Respuesta generada correctamente (%d caracteres).",
+            len(response),
+        )
 
-    # =============================================================
-    # LIMPIEZA
-    # =============================================================
+        return response
 
-    @staticmethod
-    def _clean_output(text: str) -> str:
+    # ============================================================
+    # CONTROL DEL PROCESO
+    # ============================================================
+
+    def _communicate_with_exit(
+        self,
+        process: subprocess.Popen,
+    ):
         """
-        Elimina delimitadores de conversación que puedan
-        aparecer en la respuesta.
+        Espera la generación y después ordena a llama-cli salir.
+
+        No usamos communicate(input=...) directamente porque
+        algunas builds pueden no procesar stdin hasta después
+        de haber generado la respuesta.
+
+        Se utiliza un hilo auxiliar para esperar la salida del
+        proceso mientras el hilo principal controla el timeout.
         """
+
+        result = {
+            "stdout": "",
+            "stderr": "",
+            "exception": None,
+        }
+
+        def reader():
+            try:
+                stdout, stderr = process.communicate(
+                    input="/exit\n",
+                    timeout=self.timeout,
+                )
+
+                result["stdout"] = stdout or ""
+                result["stderr"] = stderr or ""
+
+            except subprocess.TimeoutExpired as exc:
+                result["exception"] = exc
+
+        thread = threading.Thread(
+            target=reader,
+            name="mia-llama-reader",
+            daemon=True,
+        )
+
+        thread.start()
+
+        thread.join(
+            timeout=self.timeout
+        )
+
+        if thread.is_alive():
+            raise subprocess.TimeoutExpired(
+                cmd=process.args,
+                timeout=self.timeout,
+            )
+
+        if result["exception"] is not None:
+            raise result["exception"]
+
+        return (
+            result["stdout"],
+            result["stderr"],
+        )
+
+    def _terminate_process(
+        self,
+        process: Optional[subprocess.Popen],
+    ) -> None:
+        """
+        Finaliza llama-cli de forma escalonada.
+
+        terminate()
+            ↓
+        wait()
+            ↓
+        kill()
+            ↓
+        wait()
+        """
+
+        if process is None:
+            return
+
+        try:
+            if process.poll() is not None:
+                return
+
+            logger.warning(
+                "Finalizando proceso llama-cli que permanece activo."
+            )
+
+            process.terminate()
+
+            try:
+                process.wait(
+                    timeout=3
+                )
+
+                return
+
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "llama-cli no terminó después de "
+                    "terminate(); forzando cierre."
+                )
+
+            process.kill()
+
+            try:
+                process.wait(
+                    timeout=3
+                )
+
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    "No fue posible esperar el cierre final "
+                    "de llama-cli."
+                )
+
+        except OSError as exc:
+            logger.error(
+                "Error finalizando llama-cli: %s",
+                exc,
+            )
+
+    def _close_pipes(
+        self,
+        process: subprocess.Popen,
+    ) -> None:
+        """
+        Cierra stdin/stdout/stderr si continúan abiertos.
+        """
+
+        for stream_name in (
+            "stdin",
+            "stdout",
+            "stderr",
+        ):
+            stream = getattr(
+                process,
+                stream_name,
+                None,
+            )
+
+            if stream is None:
+                continue
+
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+
+    # ============================================================
+    # PARSER DE RESPUESTA
+    # ============================================================
+
+    def _extract_response(
+        self,
+        stdout: str,
+        prompt: str,
+    ) -> str:
+        """
+        Extrae únicamente la respuesta del modelo.
+
+        llama-cli puede producir:
+
+            banner
+            instrucciones
+            > prompt
+            respuesta
+            > /exit
+            Exiting...
+
+        El Orchestrator no debe recibir ninguno de esos elementos.
+        """
+
+        if not stdout:
+            return ""
+
+        text = stdout.replace(
+            "\r\n",
+            "\n",
+        ).replace(
+            "\r",
+            "\n",
+        )
+
+        # --------------------------------------------------------
+        # Eliminar códigos ANSI
+        # --------------------------------------------------------
+
+        text = re.sub(
+            r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])",
+            "",
+            text,
+        )
+
+        lines = text.splitlines()
+
+        # --------------------------------------------------------
+        # Marcadores que nunca pertenecen a la respuesta
+        # --------------------------------------------------------
+
+        ignored_exact = {
+            "Loading model...",
+            "Exiting...",
+        }
+
+        ignored_prefixes = (
+            "build      :",
+            "model      :",
+            "ftype      :",
+            "modalities :",
+            "available commands:",
+            "/exit or Ctrl+C",
+            "/regen",
+            "/clear",
+            "/read",
+            "/glob",
+        )
+
+        cleaned = []
+
+        for line in lines:
+            stripped = line.strip()
+
+            if not stripped:
+                continue
+
+            if stripped in ignored_exact:
+                continue
+
+            if stripped.startswith(
+                ignored_prefixes
+            ):
+                continue
+
+            # Diagnóstico típico de ggml/llama.cpp.
+            if re.match(
+                r"^\d+\.\d+\.\d+.*ggml_",
+                stripped,
+                re.IGNORECASE,
+            ):
+                continue
+
+            # Algunas builds imprimen:
+            #
+            # > /exit
+            #
+            if stripped in (
+                "> /exit",
+                "/exit",
+            ):
+                continue
+
+            cleaned.append(
+                line
+            )
+
+        if not cleaned:
+            return ""
+
+        text = "\n".join(
+            cleaned
+        ).strip()
+
+        # --------------------------------------------------------
+        # Eliminar el prompt echoado
+        # --------------------------------------------------------
+
+        prompt_clean = prompt.strip()
+
+        if prompt_clean:
+            # Caso habitual:
+            #
+            # > prompt
+            # respuesta
+            #
+            escaped_prompt = re.escape(
+                prompt_clean
+            )
+
+            text = re.sub(
+                rf"^\s*>\s*{escaped_prompt}\s*\n?",
+                "",
+                text,
+                count=1,
+                flags=re.DOTALL,
+            )
+
+            # Algunas builds no colocan ">".
+            if text.startswith(
+                prompt_clean
+            ):
+                text = text[
+                    len(prompt_clean):
+                ].lstrip()
+
+        # --------------------------------------------------------
+        # Eliminar líneas de prompt residuales
+        # --------------------------------------------------------
+
+        result_lines = []
+
+        for line in text.splitlines():
+            stripped = line.strip()
+
+            if stripped in (
+                ">",
+                ">>>",
+            ):
+                continue
+
+            if stripped in (
+                "/exit",
+                "> /exit",
+            ):
+                continue
+
+            result_lines.append(
+                line
+            )
+
+        text = "\n".join(
+            result_lines
+        ).strip()
+
+        # --------------------------------------------------------
+        # Eliminar timings de llama-cli
+        # --------------------------------------------------------
+
+        text = re.sub(
+            r"\[\s*Prompt:\s*[\d.]+\s*t/s.*?\]",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        text = re.sub(
+            r"\[\s*Generation:\s*[\d.]+\s*t/s.*?\]",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
 
         text = text.strip()
 
-        stop_markers = [
-            "<|user|>",
-            "<|assistant|>",
-            "<|system|>",
-            "\nUser:",
-            "\nAssistant:",
-        ]
+        return text
 
-        for marker in stop_markers:
+    # ============================================================
+    # LOGGING
+    # ============================================================
 
-            if marker in text:
-
-                text = text.split(
-                    marker,
-                    1
-                )[0]
-
-        return text.strip()
-
-    # =============================================================
-    # INFORMACIÓN DEL MOTOR
-    # =============================================================
-
-    def info(self) -> Dict[str, Any]:
+    def _log_stderr(
+        self,
+        stderr: str,
+    ) -> None:
         """
-        Información del motor actualmente activo.
+        Registra stderr sin convertir automáticamente todos
+        los mensajes de llama.cpp en errores de Mía.
+        """
+
+        for line in stderr.splitlines():
+            line = line.strip()
+
+            if not line:
+                continue
+
+            # Mensajes conocidos que no impiden la ejecución.
+            if "ggml_opencl" in line.lower():
+                logger.debug(
+                    "llama.cpp: %s",
+                    line,
+                )
+                continue
+
+            logger.debug(
+                "llama-cli stderr: %s",
+                line,
+            )
+
+    # ============================================================
+    # UTILIDADES
+    # ============================================================
+
+    @staticmethod
+    def _merge_streams(
+        stdout: Optional[str],
+        stderr: Optional[str],
+    ) -> str:
+        """
+        Une stdout/stderr para diagnósticos.
+        """
+
+        parts = []
+
+        if stdout:
+            parts.append(
+                stdout.strip()
+            )
+
+        if stderr:
+            parts.append(
+                stderr.strip()
+            )
+
+        return "\n".join(
+            parts
+        )
+
+    # ============================================================
+    # INFORMACIÓN DEL MOTOR
+    # ============================================================
+
+    def get_info(self) -> dict:
+        """
+        Devuelve información serializable del motor.
+
+        Útil para diagnósticos, telemetry y tests.
         """
 
         return {
             "backend": "llama.cpp",
-            "executable": self.llama_cli,
+            "executable": str(self.llama_cli),
             "model": str(self.model_path),
-            "model_name": self.model_path.name,
             "context": self.n_ctx,
             "threads": self.n_threads,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
+            "timeout": self.timeout,
         }
+
+    @property
+    def info(self) -> dict:
+        """
+        Compatibilidad cómoda con código que trate info
+        como propiedad.
+        """
+
+        return self.get_info()
+
+    def health_check(self) -> bool:
+        """
+        Comprueba que el ejecutable y el modelo continúan
+        disponibles.
+
+        No carga el modelo.
+        """
+
+        return ()
