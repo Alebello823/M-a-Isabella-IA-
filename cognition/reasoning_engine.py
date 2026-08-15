@@ -172,12 +172,26 @@ class ReasoningEngine:
         facts: Iterable[str],
     ) -> List[Tuple[str, str]]:
         """
-        Busca contradicciones explícitas del tipo:
+        Detecta contradicciones explícitas y cuantitativas.
+
+        Tipos soportados:
+
+        1. Contradicción explícita:
 
             "X es verdadero"
-            "X no es verdadero"
+            "no X es verdadero"
 
-        También detecta pares booleanos simples.
+        2. Contradicción cuantitativa:
+
+            "El teléfono tiene 2 GB libres."
+            "El teléfono tiene 20 GB libres."
+
+        La detección cuantitativa es conservadora:
+        solamente considera contradicción cuando dos
+        afirmaciones parecen describir la misma propiedad
+        y contienen valores numéricos diferentes.
+
+        No intenta realizar razonamiento semántico general.
         """
 
         normalized = [
@@ -186,25 +200,177 @@ class ReasoningEngine:
             if f and f.strip()
         ]
 
-        contradictions = []
+        contradictions: List[Tuple[str, str]] = []
+
+        # --------------------------------------------------
+        # 1. Contradicciones explícitas
+        # --------------------------------------------------
 
         for fact in normalized:
             if fact.startswith("no "):
                 opposite = fact[3:].strip()
 
                 if opposite in normalized:
-                    contradictions.append(
-                        (fact, opposite)
-                    )
+                    pair = (fact, opposite)
+
+                    if pair not in contradictions:
+                        contradictions.append(pair)
+
             else:
                 opposite = "no " + fact
 
                 if opposite in normalized:
+                    pair = (fact, opposite)
+
+                    if pair not in contradictions:
+                        contradictions.append(pair)
+
+        # --------------------------------------------------
+        # 2. Contradicciones cuantitativas
+        # --------------------------------------------------
+
+        for index, first in enumerate(normalized):
+            for second in normalized[index + 1:]:
+                if self._quantitative_contradiction(
+                    first,
+                    second,
+                ):
                     contradictions.append(
-                        (fact, opposite)
+                        (first, second)
                     )
 
         return contradictions
+
+    @staticmethod
+    def _quantitative_contradiction(
+        first: str,
+        second: str,
+    ) -> bool:
+        """
+        Detecta dos afirmaciones cuantitativas incompatibles
+        sobre una misma propiedad.
+
+        Ejemplo:
+
+            "el teléfono tiene 2 gb libres"
+            "el teléfono tiene 20 gb libres"
+
+        Devuelve True.
+
+        No intenta decidir causalidad.
+        """
+
+        pattern = re.compile(
+            r"""
+            (?P<value>\d+(?:[.,]\d+)?)
+            \s*
+            (?P<unit>
+                gb|gib|mb|mib|
+                kb|kib|
+                tb|tib|
+                %|por\s*ciento
+            )
+            """,
+            re.IGNORECASE | re.VERBOSE,
+        )
+
+        first_match = pattern.search(first)
+        second_match = pattern.search(second)
+
+        if not first_match or not second_match:
+            return False
+
+        first_unit = (
+            first_match.group("unit")
+            .lower()
+            .replace(" ", "")
+        )
+
+        second_unit = (
+            second_match.group("unit")
+            .lower()
+            .replace(" ", "")
+        )
+
+        # Unidades incompatibles no permiten
+        # afirmar contradicción automáticamente.
+        if first_unit != second_unit:
+            return False
+
+        first_value = float(
+            first_match.group("value").replace(",", ".")
+        )
+
+        second_value = float(
+            second_match.group("value").replace(",", ".")
+        )
+
+        # Mismo valor → no hay contradicción.
+        if first_value == second_value:
+            return False
+
+        # Eliminamos los valores para comparar
+        # la estructura restante de las afirmaciones.
+        first_structure = pattern.sub(
+            "<VALUE>",
+            first,
+            count=1,
+        )
+
+        second_structure = pattern.sub(
+            "<VALUE>",
+            second,
+            count=1,
+        )
+
+        # Normalizamos espacios.
+        first_structure = re.sub(
+            r"\s+",
+            " ",
+            first_structure,
+        ).strip()
+
+        second_structure = re.sub(
+            r"\s+",
+            " ",
+            second_structure,
+        ).strip()
+
+        # Si las estructuras son idénticas,
+        # representan la misma afirmación cuantitativa.
+        if first_structure == second_structure:
+            return True
+
+        # --------------------------------------------------
+        # Comparación estructural ligera
+        # --------------------------------------------------
+
+        first_words = {
+            word
+            for word in first_structure.split()
+            if len(word) >= 4
+        }
+
+        second_words = {
+            word
+            for word in second_structure.split()
+            if len(word) >= 4
+        }
+
+        if not first_words or not second_words:
+            return False
+
+        overlap = first_words & second_words
+
+        similarity = (
+            len(overlap)
+            / max(
+                len(first_words),
+                len(second_words),
+            )
+        )
+
+        return similarity >= 0.70
 
     def compare_hypotheses(
         self,

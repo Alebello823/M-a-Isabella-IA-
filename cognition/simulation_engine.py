@@ -1,7 +1,16 @@
 """
-Motor de simulación ligera.
+Motor de simulación ligera del Cognitive Core.
 
-Permite evaluar consecuencias hipotéticas sin ejecutar acciones reales.
+La simulación NO ejecuta acciones.
+
+Distingue entre:
+
+- resultado observado
+- acción no ejecutada
+- acción bloqueada
+
+Por diseño, una acción no ejecutada NO se considera
+un fracaso real.
 """
 
 from dataclasses import dataclass, field
@@ -12,11 +21,22 @@ from cognition.models import Plan
 
 @dataclass
 class SimulationResult:
+
     success_probability: float
+
     expected_outcome: str
-    failed_steps: List[str] = field(default_factory=list)
-    assumptions: List[str] = field(default_factory=list)
-    state: Dict[str, Any] = field(default_factory=dict)
+
+    failed_steps: List[str] = field(
+        default_factory=list
+    )
+
+    assumptions: List[str] = field(
+        default_factory=list
+    )
+
+    state: Dict[str, Any] = field(
+        default_factory=dict
+    )
 
 
 class SimulationEngine:
@@ -27,19 +47,26 @@ class SimulationEngine:
         initial_state: Dict[str, Any] = None,
     ) -> SimulationResult:
 
-        state = dict(initial_state or {})
-        failed_steps = []
-        assumptions = []
+        state = dict(
+            initial_state or {}
+        )
+
+        failed_steps: List[str] = []
+        assumptions: List[str] = []
 
         if not plan.steps:
+
             return SimulationResult(
                 success_probability=0.0,
-                expected_outcome="No existe un plan.",
+                expected_outcome=(
+                    "No existe un plan que simular."
+                ),
                 state=state,
             )
 
-        observable_steps = 0
-        blocked_steps = 0
+        observed_complete = 0
+        observed_failed = 0
+        pending = 0
 
         for step in plan.steps:
 
@@ -48,50 +75,98 @@ class SimulationEngine:
                     step.preconditions
                 )
 
-            # Una simulación no puede afirmar que
-            # una acción real ocurrió.
-            if not step.completed:
-                blocked_steps += 1
+            # ----------------------------------------------
+            # Paso observado como completado
+            # ----------------------------------------------
 
-                failed_steps.append(
-                    step.action
-                )
+            if step.completed:
+
+                observed_complete += 1
 
                 state[
                     f"simulated:{step.action}"
-                ] = "REQUIRES_OBSERVATION"
+                ] = "OBSERVED_COMPLETE"
 
                 continue
 
-            observable_steps += 1
+            # ----------------------------------------------
+            # Paso todavía no ejecutado
+            # ----------------------------------------------
+
+            pending += 1
 
             state[
                 f"simulated:{step.action}"
-            ] = "OBSERVED_COMPLETE"
+            ] = "NOT_EXECUTED"
 
-        probability = (
-            observable_steps / len(plan.steps)
+        # --------------------------------------------------
+        # Solamente los resultados observados influyen
+        # en la evidencia de éxito.
+        # --------------------------------------------------
+
+        observed_total = (
+            observed_complete
+            + observed_failed
         )
 
-        probability *= plan.confidence
+        if observed_total > 0:
 
-        if blocked_steps:
+            observed_success = (
+                observed_complete
+                / observed_total
+            )
+
+            probability = (
+                observed_success
+                * plan.confidence
+            )
+
+        else:
+
+            # No existe evidencia de ejecución.
+            # La simulación no inventa éxito ni fracaso.
+            probability = (
+                plan.confidence
+                * 0.50
+            )
+
+        probability = max(
+            0.0,
+            min(
+                1.0,
+                probability,
+            ),
+        )
+
+        # --------------------------------------------------
+        # Resultado esperado
+        # --------------------------------------------------
+
+        if observed_failed:
+
+            expected_outcome = (
+                "Existen pasos observados con resultado "
+                "negativo. Se requiere análisis antes "
+                "de continuar."
+            )
+
+        elif pending:
+
             expected_outcome = (
                 "El plan es estructuralmente viable, "
-                "pero requiere observaciones reales antes "
-                "de confirmar sus resultados."
+                "pero todavía requiere observaciones reales "
+                "para validar sus resultados."
             )
+
         else:
+
             expected_outcome = (
-                "Los pasos observables del plan "
-                "son compatibles con las condiciones conocidas."
+                "Todos los pasos disponibles presentan "
+                "resultados observados."
             )
 
         return SimulationResult(
-            success_probability=max(
-                0.0,
-                min(1.0, probability),
-            ),
+            success_probability=probability,
             expected_outcome=expected_outcome,
             failed_steps=failed_steps,
             assumptions=assumptions,

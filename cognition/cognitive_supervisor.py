@@ -38,7 +38,7 @@ from cognition.reasoning_engine import ReasoningEngine
 from cognition.risk_engine import RiskEngine
 from cognition.simulation_engine import SimulationEngine
 from cognition.uncertainty_engine import UncertaintyEngine
-
+from cognition.question_engine import QuestionEngine
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,8 @@ class CognitiveSupervisor:
         decision_maker: Optional[DecisionMaker] = None,
         uncertainty_engine: Optional[UncertaintyEngine] = None,
         confidence_calculator: Optional[ConfidenceCalculator] = None,
-    ):
+        question_engine: Optional[QuestionEngine] = None, 
+   ):
 
         self.reasoning = (
             reasoning_engine
@@ -95,6 +96,10 @@ class CognitiveSupervisor:
         self.confidence = (
             confidence_calculator
             or ConfidenceCalculator()
+        )
+        self.questions = (
+            question_engine
+            or QuestionEngine()
         )
 
     def solve(
@@ -217,26 +222,13 @@ class CognitiveSupervisor:
             or bool(analysis["contradictions"])
         )
 
-        questions = list(
-            problem.unknowns
+        questions = self.questions.generate(
+            problem,
+            hypotheses,
+            analysis["contradictions"],
         )
 
-        # Si existe contradicción, convertirla
-        # en una pregunta cognitiva explícita.
-
-        for first, second in analysis["contradictions"]:
-            questions.append(
-                f"Resolver contradicción entre "
-                f"'{first}' y '{second}'."
-            )
-
-        logger.info(
-            "Ciclo cognitivo terminado: "
-            "confidence=%.2f uncertainty=%.2f",
-            global_confidence,
-            uncertainty,
-        )
-
+       
         # -----------------------------------------------------
         # 11. Resultado cognitivo
         # -----------------------------------------------------

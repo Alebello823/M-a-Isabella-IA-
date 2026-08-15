@@ -537,7 +537,6 @@ class LlamaCppEngine:
         return response
 
     # ============================================================
-    # ============================================================
     # PARSER DE RESPUESTA
     # ============================================================
 
@@ -547,39 +546,26 @@ class LlamaCppEngine:
         prompt: str,
     ) -> str:
         """
-        Extrae la respuesta generada por llama-cli.
+        Extrae únicamente el texto generado.
 
-        IMPORTANTE
-        ----------
-        No depende de encontrar el prompt exacto.
+        Soporta la salida interactiva observada en Termux:
 
-        llama-cli puede comportarse de forma diferente
-        dependiendo de:
-        - longitud del prompt
-        - saltos de línea
-        - --simple-io
-        - --no-display-prompt
-        - versión/build de llama.cpp
+            Loading model...
 
-        Por eso el parser identifica primero la parte
-        interactiva de llama-cli y posteriormente elimina
-        elementos de control.
-
-        Ejemplos aceptados:
+            banner
 
             > Responde solamente: HOLA
             Hola!
 
-            >
+            [ Prompt: 15.5 t/s | Generation: 8.4 t/s ]
+
+            > /exit
 
             Exiting...
 
-        y:
+        Resultado:
 
             Hola!
-
-            Exiting...
-
         """
 
         if not stdout:
@@ -593,40 +579,28 @@ class LlamaCppEngine:
             "\n",
         )
 
-        text = self._remove_ansi(text)
+        text = self._remove_ansi(
+            text
+        )
 
         lines = text.splitlines()
 
-        if not lines:
-            return ""
-
-        logger.debug(
-            "Parser: stdout contiene %d líneas.",
-            len(lines),
-        )
-
-        logger.debug(
-            "Parser: stdout repr=%r",
-            stdout,
-        )
+        prompt_clean = prompt.strip()
 
         # --------------------------------------------------------
-        # 1. Buscar una línea de prompt visible
+        # Primero intentamos localizar el prompt.
         # --------------------------------------------------------
 
-        prompt_start = self._find_visible_prompt(lines)
+        start = self._find_prompt_start(
+            lines,
+            prompt_clean,
+        )
 
-        if prompt_start is not None:
-
-            logger.debug(
-                "Parser: prompt visible encontrado "
-                "en línea %d.",
-                prompt_start,
-            )
+        if start is not None:
 
             response_lines = []
 
-            for line in lines[prompt_start + 1:]:
+            for line in lines[start:]:
 
                 stripped = line.strip()
 
@@ -634,9 +608,6 @@ class LlamaCppEngine:
                     stripped
                 ):
                     break
-
-                if not stripped:
-                    continue
 
                 response_lines.append(
                     line
@@ -654,18 +625,102 @@ class LlamaCppEngine:
                 return response
 
         # --------------------------------------------------------
-        # 2. Fallback:
-        #    buscar contenido después del bloque interactivo
+        # Fallback
         # --------------------------------------------------------
+        #
+        # Algunas builds/configuraciones pueden no imprimir
+        # el prompt exactamente como:
+        #
+        #     > prompt
+        #
+        # Si eso ocurre, intentamos recuperar la respuesta
+        # buscando una zona posterior al prompt y eliminando
+        # elementos conocidos de la interfaz.
+        #
 
-        logger.debug(
-            "Parser: no se pudo utilizar el prompt visible. "
-            "Activando fallback."
+        response = self._fallback_extract(
+            lines,
+            prompt_clean,
         )
 
-        response_lines = []
+        return self._clean_response(
+            response
+        )
 
-        generation_started = False
+    # ============================================================
+    # LOCALIZAR PROMPT
+    # ============================================================
+
+    @staticmethod
+    def _find_prompt_start(
+        lines: list[str],
+        prompt: str,
+    ) -> Optional[int]:
+        """
+        Localiza la línea inmediatamente posterior
+        al prompt introducido en llama-cli.
+        """
+
+        if not prompt:
+            return None
+
+        # --------------------------------------------------------
+        # Coincidencia exacta
+        # --------------------------------------------------------
+
+        for index, line in enumerate(lines):
+
+            stripped = line.strip()
+
+            if stripped == prompt:
+                return index + 1
+
+            if stripped == f"> {prompt}":
+                return index + 1
+
+        # --------------------------------------------------------
+        # Regex
+# --------------------------------------------------------
+
+        escaped = re.escape(
+            prompt
+        )
+
+        pattern = re.compile(
+            rf"^\s*>\s*{escaped}\s*$"
+        )
+
+        for index, line in enumerate(lines):
+
+            if pattern.match(line):
+                return index + 1
+
+        return None
+
+    # ============================================================
+    # FALLBACK
+    # ============================================================
+
+    @classmethod
+    def _fallback_extract(
+        cls,
+        lines: list[str],
+        prompt: str,
+    ) -> str:
+        """
+        Fallback para builds de llama-cli que no muestran
+        exactamente el prompt.
+
+        No intenta adivinar contenido generado.
+        Solamente elimina elementos conocidos de la interfaz.
+        """
+
+        if not lines:
+            return ""
+
+        cleaned = []
+
+        prompt_seen = False
 
         for line in lines:
 
@@ -674,234 +729,40 @@ class LlamaCppEngine:
             if not stripped:
                 continue
 
-            # ----------------------------------------------------
-            # Ignorar banner / metadata de llama-cli
+            # ----------------------------------------------------           # Prompt
             # ----------------------------------------------------
 
-            if self._is_llama_header_line(
-                stripped
+            if (
+                stripped == prompt
+                or stripped == f"> {prompt}"
             ):
+                prompt_seen = True
                 continue
 
             # ----------------------------------------------------
-            # Si encontramos un prompt visible,
-            # todo lo posterior puede ser respuesta.
+            # Si aparece una línea de prompt con > pero no coincide
+            # exactamente, no la consideramos respuesta.
             # ----------------------------------------------------
 
-            if self._is_prompt_line(
-                stripped
-            ):
-                generation_started = True
+            if not prompt_seen:
                 continue
 
             # ----------------------------------------------------
-            # Si todavía no comenzó la generación,
-            # ignoramos basura de arranque.
+            # Fin de generación
             # ----------------------------------------------------
 
-            if not generation_started:
-
-                if self._looks_like_generated_text(
-                    stripped
-                ):
-                    generation_started = True
-                else:
-                    continue
-
-            # ----------------------------------------------------
-            # Final de llama-cli
-            # ----------------------------------------------------
-
-            if self._is_generation_end(
+            if cls._is_generation_end(
                 stripped
             ):
                 break
 
-            response_lines.append(
+            cleaned.append(
                 line
             )
 
-        response = "\n".join(
-            response_lines
+        return "\n".join(
+            cleaned
         ).strip()
-
-        response = self._clean_response(
-            response
-        )
-
-        if response:
-            logger.debug(
-                "Parser fallback: respuesta encontrada "
-                "(%d caracteres).",
-                len(response),
-            )
-
-            return response
-
-        logger.warning(
-            "No se pudo localizar una respuesta "
-            "válida dentro de stdout."
-        )
-
-        logger.debug(
-            "stdout completo para diagnóstico:\n%s",
-            stdout,
-        )
-
-        return ""
-
-    # ============================================================
-    # DETECCIÓN DE PROMPT
-    # ============================================================
-
-    @staticmethod
-    def _find_visible_prompt(
-        lines: list[str],
-    ) -> Optional[int]:
-        """
-        Busca una línea que represente el prompt interactivo
-        de llama-cli.
-
-        No intenta comparar contra el prompt original porque
-        este puede ser multilínea.
-        """
-
-        for index, line in enumerate(lines):
-
-            stripped = line.strip()
-
-            if not stripped:
-                continue
-
-            if stripped.startswith("> "):
-                return index
-
-            if stripped == ">":
-                continue
-
-        return None
-
-    @staticmethod
-    def _is_prompt_line(
-        line: str,
-    ) -> bool:
-        """
-        Determina si una línea pertenece al prompt interactivo.
-        """
-
-        if not line:
-            return False
-
-        if line.startswith("> "):
-            return True
-
-        return False
-
-    # ============================================================
-    # CABECERA LLAMA-CLI
-    # ============================================================
-
-    @staticmethod
-    def _is_llama_header_line(
-        line: str,
-    ) -> bool:
-        """
-        Detecta líneas pertenecientes al arranque de llama-cli.
-        """
-
-        if not line:
-            return True
-
-        if line == "Loading model...":
-            return True
-
-        if line.startswith("build"):
-            return True
-
-        if line.startswith("model"):
-            return True
-
-        if line.startswith("ftype"):
-            return True
-
-        if line.startswith("modalities"):
-            return True
-
-        if line == "available commands:":
-            return True
-
-        if line.startswith("/exit"):
-            return True
-
-        if line.startswith("/regen"):
-            return True
-
-        if line.startswith("/clear"):
-            return True
-
-        if line.startswith("/read"):
-            return True
-
-        if line.startswith("/glob"):
-            return True
-
-        return False
-
-    # ============================================================
-    # DETECCIÓN DE TEXTO GENERADO
-    # ============================================================
-
-    @staticmethod
-    def _looks_like_generated_text(
-        line: str,
-    ) -> bool:
-        """
-        Heurística conservadora para detectar una posible
-        respuesta cuando llama-cli no muestra el prompt.
-
-        No intenta interpretar semánticamente el contenido.
-        """
-
-        if not line:
-            return False
-
-        if line.startswith("["):
-            return False
-
-        if line.startswith(">"):
-            return False
-
-        if line.startswith("Loading model"):
-            return False
-
-        if line.startswith("build"):
-            return False
-
-        if line.startswith("model"):
-            return False
-
-        if line.startswith("ftype"):
-            return False
-
-        if line.startswith("modalities"):
-            return False
-
-        if line.startswith("available commands"):
-            return False
-
-        if line == "Exiting...":
-            return False
-
-        # El banner ASCII de llama-cli contiene caracteres
-        # que no representan texto normal generado.
-        banner_chars = "▄▀███"
-        if any(
-            char in line
-            for char in banner_chars
-        ):
-            return False
-
-        return True
 
     # ============================================================
     # FIN DE GENERACIÓN
@@ -919,6 +780,8 @@ class LlamaCppEngine:
         if not line:
             return False
 
+        # Controles interactivos.
+
         if line in (
             ">",
             ">>>",
@@ -927,6 +790,8 @@ class LlamaCppEngine:
             "Exiting...",
         ):
             return True
+
+        # Timings.
 
         if re.match(
             r"^\[\s*Prompt:",
@@ -942,11 +807,20 @@ class LlamaCppEngine:
         ):
             return True
 
+        # Algunas versiones imprimen ambos timings
+        # dentro de una sola línea.
+
+        if re.match(
+            r"^\[\s*Prompt:.*Generation:",
+            line,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
         return False
 
     # ============================================================
-    # LIMPIEZA
-    # ============================================================
+    # LIMPIEZA# ============================================================
 
     @staticmethod
     def _clean_response(
@@ -967,20 +841,11 @@ class LlamaCppEngine:
             "\n",
         )
 
-        # Métricas completas:
+        # --------------------------------------------------------
+        # Timings:
         #
         # [ Prompt: 15.5 t/s | Generation: 8.4 t/s ]
-
-        response = re.sub(
-            r"\[\s*Prompt:\s*[\d.,]+\s*t/s"
-            r"\s*\|\s*Generation:\s*[\d.,]+\s*t/s"
-            r"\s*\]",
-            "",
-            response,
-            flags=re.IGNORECASE,
-        )
-
-        # Variantes individuales.
+        # --------------------------------------------------------
 
         response = re.sub(
             r"\[\s*Prompt:.*?\]",
@@ -1002,7 +867,9 @@ class LlamaCppEngine:
             ),
         )
 
-        # Control de salida.
+        # --------------------------------------------------------
+        # Exiting...
+        # --------------------------------------------------------
 
         response = re.sub(
             r"^\s*Exiting\.\.\.\s*$",
@@ -1011,12 +878,27 @@ class LlamaCppEngine:
             flags=re.MULTILINE,
         )
 
+        # --------------------------------------------------------
+        # /exit
+        # --------------------------------------------------------
+
         response = re.sub(
-            r"^\s*> /exit\s*$",
+            r"^\s*>\s*/exit\s*$",
             "",
             response,
             flags=re.MULTILINE,
         )
+
+        response = re.sub(
+            r"^\s*/exit\s*$",
+            "",
+            response,
+            flags=re.MULTILINE,
+        )
+
+        # --------------------------------------------------------
+        # Prompts vacíos.
+        # --------------------------------------------------------
 
         response = re.sub(
             r"^\s*>\s*$",

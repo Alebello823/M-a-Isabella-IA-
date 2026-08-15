@@ -1,75 +1,84 @@
 # ==============================
 # Python
 # ==============================
-
 __pycache__/
 *.py[cod]
-*.pyo
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
+# ==============================
+# Virtual environments
+# ==============================
 venv/
 .venv/
+env/
+ENV/
 
 # ==============================
-# Modelos locales
+# Models
 # ==============================
-
-models/
-*.gguf
-*.bin
-*.safetensors
-*.onnx
+models/*.gguf
+models/*.bin
+models/*.safetensors
+models/*.pt
+models/*.pth
 
 # ==============================
-# Bases de datos locales
+# Runtime data
 # ==============================
-
-*.db
-*.sqlite
-*.sqlite3
-
-data/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 
 # ==============================
 # Logs
 # ==============================
-
-*.log
 logs/
+*.log
 
 # ==============================
-# Reportes y resultados
+# Backups / temporary files
 # ==============================
-
-reports/
-report/
-results/
-scans/
-recon/
-output/
-
-# ==============================
-# Backups locales
-# ==============================
-
 backups/
+backup/
+termux-backups/
+*.bak
+*.backup
+*.old
+*.tmp
+*.swp
+*.swo
 
 # ==============================
-# Python tooling
+# IDE / editor
 # ==============================
-
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+.vscode/
+.idea/
 
 # ==============================
-# Termux / sistema
+# OS
 # ==============================
-
-.termux/
+.DS_Store
+Thumbs.db
 
 # ==============================
-# Entorno
+# Secrets / credentials
 # ==============================
-
 .env
 .env.*
+*.pem
+*.key
+*.pub
+id_rsa
+id_ed25519
+
+# ==============================
+# Local runtime artifacts
+# ==============================
+*.pid
+*.sock

@@ -221,18 +221,27 @@ class HypothesisEngine:
     ) -> List[Hypothesis]:
 
         evidence = list(evidence)
-        result = []
 
         for hypothesis in hypotheses:
 
             statement_words = {
                 word
-                for word in hypothesis.statement.lower().split()
+                for word in self._normalize(
+                    hypothesis.statement
+                ).split()
                 if len(word) > 5
             }
 
+            # Evitar duplicación si la hipótesis
+            # ya hubiera sido evaluada anteriormente.
+            hypothesis.supporting_evidence.clear()
+            hypothesis.opposing_evidence.clear()
+
             for item in evidence:
-                text = item.content.lower()
+
+                text = self._normalize(
+                    item.content
+                )
 
                 overlap = sum(
                     1
@@ -241,25 +250,35 @@ class HypothesisEngine:
                 )
 
                 # La coincidencia textual solamente
-                # aporta evidencia; nunca confirma causalidad.
+                # proporciona evidencia débil.
                 if overlap >= 3:
-                    hypothesis.supporting_evidence.append(item)
+
+                    hypothesis.supporting_evidence.append(
+                        item
+                    )
 
                 elif overlap == 2:
+
                     if item.evidence_type in (
                         EvidenceType.FACT,
                         EvidenceType.OBSERVATION,
                         EvidenceType.EXTERNAL,
                     ):
-                        hypothesis.supporting_evidence.append(item)
+                        hypothesis.supporting_evidence.append(
+                            item
+                        )
 
-            result.append(
-                self.reasoning.evaluate_hypothesis(
-                    hypothesis
-                )
+            # Cada hipótesis se evalúa exactamente
+            # una vez en este ciclo.
+            self.reasoning.evaluate_hypothesis(
+                hypothesis
             )
 
-        return self.reasoning.compare_hypotheses(result)
+        return sorted(
+            hypotheses,
+            key=lambda h: h.confidence,
+            reverse=True,
+        )
 
     # ==========================================================
     # UTILIDADES

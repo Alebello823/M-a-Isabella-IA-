@@ -1,5 +1,5 @@
 """
-Orquestador principal de Mía Isabella.
+Orquestador central de Mía Isabella.
 
 Flujo:
 
@@ -7,28 +7,22 @@ mensaje
    ↓
 memoria episódica
    ↓
-problema cognitivo
+contexto
    ↓
 Cognitive Core
    ↓
-contexto cognitivo
+prompt
    ↓
-motor de inferencia
+Inference Engine
    ↓
 respuesta
    ↓
-memoria episódica
-   ↓
-extracción opcional de conocimiento
+memoria
 
-El Orchestrator NO depende de un modelo concreto.
-
-Qwen, Phi, Gemma, otro GGUF o cualquier backend compatible
-son únicamente motores lingüísticos.
+El Orchestrator no conoce el modelo concreto.
 """
 
 import logging
-
 from datetime import datetime
 from typing import List, Optional
 
@@ -38,9 +32,7 @@ from internal.schemas import (
     Episode,
 )
 
-from contracts.inference import (
-    InferenceEngineProtocol,
-)
+from contracts.inference import InferenceEngineProtocol
 
 from memory.storage.episodic_repository import (
     EpisodicRepository,
@@ -50,8 +42,7 @@ from cognition.cognitive_supervisor import (
     CognitiveSupervisor,
 )
 
-from cognition.models import Problem
-
+from cognition.problem_analyzer import ProblemAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -90,137 +81,62 @@ class Orchestrator:
             or CognitiveSupervisor()
         )
 
-        logger.debug(
-            "Orchestrator inicializado"
-        )
+        self.problem_analyzer = ProblemAnalyzer()
 
-    # =============================================================
+    # =========================================================
     # PROCESAMIENTO PRINCIPAL
-    # =============================================================
+    # =========================================================
 
     def process_message(
         self,
         user_message: Message,
     ) -> Message:
-        """
-        Procesa un mensaje completo.
 
-        El flujo está diseñado para degradarse de forma segura:
-
-        memoria
-            ↓
-        cognición
-            ↓
-        inferencia
-            ↓
-        almacenamiento
-        """
-
-        logger.debug(
+        logger.info(
             "Procesando mensaje del usuario"
         )
 
-        # =========================================================
-        # 1. MEMORIA RECIENTE
-        # =========================================================
+        # -----------------------------------------------------
+        # 1. Recuperar memoria episódica
+        # -----------------------------------------------------
 
-        try:
-
-            recent_episodes = (
-                self.episodic_repo.get_recent_episodes(
-                    limit=5
-                )
+        recent_episodes = (
+            self.episodic_repo.get_recent_episodes(
+                limit=5
             )
-
-        except Exception as exc:
-
-            logger.exception(
-                "Error recuperando memoria episódica: %s",
-                exc,
-            )
-
-            recent_episodes = []
+        )
 
         context_str = self._build_context(
             recent_episodes
         )
 
-        # =========================================================
-        # 2. PROBLEMA COGNITIVO
-        # =========================================================
+        # -----------------------------------------------------
+        # 2. Construir problema cognitivo
+        # -----------------------------------------------------
 
-        problem = Problem(
-            description=user_message.content,
-
-            objective=(
-                "Responder correctamente al usuario."
-            ),
-
-            known_facts=(
-                self._extract_context_facts(
+        problem = self.problem_analyzer.analyze(
+        user_message=user_message.content,
+        context_facts=self._extract_context_facts(
                     recent_episodes
-                )
             ),
-
-            unknowns=[],
-
-            constraints=[
-                (
-                    "No ejecutar acciones reales "
-                    "desde el Cognitive Core."
-                ),
-                (
-                    "No modificar archivos "
-                    "sin autorización."
-                ),
-                (
-                    "No asumir hechos no respaldados "
-                    "por evidencia."
-                ),
-            ],
-
-            assumptions=[],
-
-            resources=[
-                "memoria episódica",
-                "motor de inferencia",
-                "Cognitive Core",
-            ],
         )
 
-        # =========================================================
-        # 3. COGNITIVE CORE
-        # =========================================================
-
-        logger.debug(
-            "Ejecutando Cognitive Core"
-        )
-
-        cognitive_result = None
+        # -----------------------------------------------------
+        # 3. Cognitive Core
+        # -----------------------------------------------------
 
         try:
 
             cognitive_result = (
-                self.cognitive.solve(
-                    problem
-                )
+                self.cognitive.solve(problem)
             )
 
-            logger.debug(
+            logger.info(
                 "Cognitive Core: "
                 "confidence=%.2f "
-                "uncertainty=%.2f "
-                "decision=%s",
-
+                "uncertainty=%.2f",
                 cognitive_result.confidence,
-
                 cognitive_result.uncertainty,
-
-                (
-                    cognitive_result.decision.action
-                    if cognitive_result.decision
-                    else "none"
-                ),
             )
 
         except Exception as exc:
@@ -230,9 +146,11 @@ class Orchestrator:
                 exc,
             )
 
-        # =========================================================
-        # 4. CONTEXTO COGNITIVO
-        # =========================================================
+            cognitive_result = None
+
+        # -----------------------------------------------------
+        # 4. Contexto cognitivo
+        # -----------------------------------------------------
 
         cognitive_context = ""
 
@@ -244,9 +162,9 @@ class Orchestrator:
                 )
             )
 
-        # =========================================================
-        # 5. PROMPT
-        # =========================================================
+        # -----------------------------------------------------
+        # 5. Construir prompt
+        # -----------------------------------------------------
 
         prompt = self._build_prompt(
             context=context_str,
@@ -254,9 +172,9 @@ class Orchestrator:
             cognitive_context=cognitive_context,
         )
 
-        # =========================================================
-        # 6. INFERENCIA
-        # =========================================================
+        # -----------------------------------------------------
+        # 6. Inferencia
+        # -----------------------------------------------------
 
         logger.debug(
             "Solicitando inferencia..."
@@ -275,45 +193,42 @@ class Orchestrator:
         except Exception as exc:
 
             logger.exception(
-                "Error en motor de inferencia: %s",
+                "Error durante inferencia: %s",
                 exc,
             )
 
             response_text = (
-                "He procesado tu mensaje, pero "
-                "el motor lingüístico no está disponible "
-                "en este momento."
+                "Lo siento, no pude generar "
+                "una respuesta en este momento."
             )
 
-        if not response_text:
+        if not response_text.strip():
+
             response_text = (
-                "No pude generar una respuesta."
+                "Lo siento, no pude generar "
+                "una respuesta en este momento."
             )
 
-        # =========================================================
-        # 7. RESPUESTA
-        # =========================================================
+        # -----------------------------------------------------
+        # 7. Crear mensaje del asistente
+        # -----------------------------------------------------
 
         assistant_message = Message(
             role=MessageRole.ASSISTANT,
-
-            content=response_text,
-
+            content=response_text.strip(),
             timestamp=datetime.now(),
         )
 
-        # =========================================================
-        # 8. GUARDAR EPISODIO
-        # =========================================================
+        # -----------------------------------------------------
+        # 8. Guardar episodio
+        # -----------------------------------------------------
 
         episode = Episode(
             messages=[
                 user_message,
                 assistant_message,
             ],
-
             start_time=user_message.timestamp,
-
             end_time=assistant_message.timestamp,
         )
 
@@ -330,9 +245,9 @@ class Orchestrator:
                 exc,
             )
 
-        # =========================================================
-        # 9. EXTRAER CONOCIMIENTO
-        # =========================================================
+        # -----------------------------------------------------
+        # 9. Extraer conocimiento
+        # -----------------------------------------------------
 
         if self.knowledge_extractor:
 
@@ -342,53 +257,41 @@ class Orchestrator:
                     episode
                 )
 
-                logger.debug(
-                    "Extracción de conocimiento completada"
-                )
-
             except Exception as exc:
 
-                logger.exception(
+                logger.error(
                     "Error en extracción de conocimiento: %s",
                     exc,
                 )
 
         return assistant_message
 
-    # =============================================================
-    # CONTEXTO DE MEMORIA
-    # =============================================================
+    # =========================================================
+    # MEMORIA
+    # =========================================================
 
     def _build_context(
         self,
         episodes: List[Episode],
     ) -> str:
-        """
-        Construye contexto conversacional reciente.
-
-        Esto es contexto temporal, no conocimiento permanente.
-        """
 
         lines = []
-
-        # Los episodios vienen DESC.
-        # Los invertimos para construir el contexto
-        # cronológicamente.
 
         for episode in reversed(episodes):
 
             for message in episode.messages:
 
                 if message.role == MessageRole.USER:
+
                     role = "Usuario"
 
                 else:
-                    role = "Asistente"
+
+                    role = "Mía"
 
                 content = (
-                    message.content.strip()
-                    if message.content
-                    else ""
+                    message.content
+                    .strip()
                 )
 
                 if not content:
@@ -398,89 +301,52 @@ class Orchestrator:
                     f"{role}: {content}"
                 )
 
-        return "\n".join(lines)
+        # Evitamos un prompt innecesariamente enorme.
 
-    # =============================================================
-    # HECHOS DE CONTEXTO
-    # =============================================================
+        return "\n".join(
+            lines[-20:]
+        )
 
     def _extract_context_facts(
         self,
         episodes: List[Episode],
     ) -> List[str]:
-        """
-        Extrae contexto estructurado para el Cognitive Core.
-
-        IMPORTANTE:
-
-        Un mensaje conversacional NO se considera automáticamente
-        un hecho.
-
-        Aquí utilizamos únicamente:
-
-        - resumen del episodio
-        - context_snapshot
-        """
 
         facts = []
 
         for episode in episodes:
 
-            if episode.summary:
+            for message in episode.messages:
 
-                summary = (
-                    episode.summary.strip()
+                content = (
+                    message.content.strip()
+                    if message.content
+                    else ""
                 )
 
-                if summary:
-                    facts.append(summary)
+                if content:
 
-            if episode.context_snapshot:
-
-                snapshot = (
-                    episode.context_snapshot
-                )
-
-                if isinstance(
-                    snapshot,
-                    dict,
-                ):
-
-                    for key, value in snapshot.items():
-
-                        if value is None:
-                            continue
-
-                        facts.append(
-                            f"{key}: {value}"
-                        )
+                    facts.append(
+                        content
+                    )
 
         return facts[-10:]
 
-    # =============================================================
+    # =========================================================
     # CONTEXTO COGNITIVO
-    # =============================================================
+    # =========================================================
 
     def _build_cognitive_context(
         self,
         result,
     ) -> str:
-        """
-        Convierte CognitiveResult en contexto legible
-        para el motor lingüístico.
-
-        El LLM recibe el resultado del Cognitive Core,
-        pero no controla el Cognitive Core.
-        """
 
         lines = [
             "=== CONTEXTO COGNITIVO ===",
-
             (
                 f"Confianza: "
                 f"{result.confidence:.2f}"
             ),
-
             (
                 f"Incertidumbre: "
                 f"{result.uncertainty:.2f}"
@@ -492,10 +358,6 @@ class Orchestrator:
             lines.append(
                 "Se necesita información adicional."
             )
-
-        # ---------------------------------------------------------
-        # HIPÓTESIS
-        # ---------------------------------------------------------
 
         if result.hypotheses:
 
@@ -514,10 +376,6 @@ class Orchestrator:
                     f"{hypothesis.status.value})"
                 )
 
-        # ---------------------------------------------------------
-        # PLAN
-        # ---------------------------------------------------------
-
         if result.plan:
 
             lines.append(
@@ -530,10 +388,6 @@ class Orchestrator:
                     f"- {step.action}"
                 )
 
-        # ---------------------------------------------------------
-        # DECISIÓN
-        # ---------------------------------------------------------
-
         if result.decision:
 
             lines.append(
@@ -541,34 +395,14 @@ class Orchestrator:
             )
 
             lines.append(
-                "- "
-                f"Acción: "
+                f"- Acción: "
                 f"{result.decision.action}"
             )
 
             lines.append(
-                "- "
-                f"Estado: "
+                f"- Estado: "
                 f"{result.decision.status.value}"
             )
-
-            if result.decision.rationale:
-
-                lines.append(
-                    "- Fundamentación:"
-                )
-
-                for reason in (
-                    result.decision.rationale[:5]
-                ):
-
-                    lines.append(
-                        f"  - {reason}"
-                    )
-
-        # ---------------------------------------------------------
-        # PREGUNTAS
-        # ---------------------------------------------------------
 
         if result.questions:
 
@@ -584,9 +418,9 @@ class Orchestrator:
 
         return "\n".join(lines)
 
-    # =============================================================
+    # =========================================================
     # PROMPT
-    # =============================================================
+    # =========================================================
 
     def _build_prompt(
         self,
@@ -594,19 +428,6 @@ class Orchestrator:
         user_input: str,
         cognitive_context: str = "",
     ) -> str:
-        """
-        Construye el prompt final.
-
-        El modelo lingüístico recibe:
-
-        1. identidad del asistente
-        2. historial reciente
-        3. resultado cognitivo
-        4. mensaje actual
-
-        El modelo no decide la arquitectura.
-        Solo genera lenguaje.
-        """
 
         prompt = (
             "<|system|>\n"
@@ -628,8 +449,9 @@ class Orchestrator:
             )
 
         prompt += (
+            "\n"
             "<|user|>\n"
-            f"{user_input}\n"
+            f"{user_input.strip()}\n"
             "<|assistant|>\n"
         )
 
